@@ -1,4 +1,4 @@
-# GrpcAsyncStream
+# GRPC Async Stream
 
 A header-only C++20 utility that wraps the gRPC **asynchronous bidirectional client stream**
 (`grpc::ClientAsyncReaderWriterInterface`) behind a small, single-threaded, poll-driven API.
