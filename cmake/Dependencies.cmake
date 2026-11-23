@@ -58,6 +58,17 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
         set(_grpc_zlib_provider module)
     endif()
 
+    # Bundled BoringSSL needs NASM for its assembly on Windows; without NASM use
+    # the portable C implementation instead of failing the build
+    set(_grpc_openssl_no_asm OFF)
+    if(WIN32 AND _grpc_ssl_provider STREQUAL "module")
+        find_program(GRPC_ASYNC_STREAM_NASM NAMES nasm)
+        if(NOT GRPC_ASYNC_STREAM_NASM)
+            set(_grpc_openssl_no_asm ON)
+            message(STATUS "GrpcAsyncStream: NASM not found, building BoringSSL without assembly (OPENSSL_NO_ASM)")
+        endif()
+    endif()
+
     CPMAddPackage(
         NAME gRPC
         GITHUB_REPOSITORY grpc/grpc
@@ -100,6 +111,11 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
             "RE2_BUILD_TESTING OFF"
             "CARES_BUILD_TOOLS OFF"
             "CARES_INSTALL OFF"
+            "OPENSSL_NO_ASM ${_grpc_openssl_no_asm}"
+            # MSVC: every library links the same (dynamic) C runtime as this project
+            "gRPC_MSVC_STATIC_RUNTIME OFF"
+            "protobuf_MSVC_STATIC_RUNTIME OFF"
+            "ABSL_MSVC_STATIC_RUNTIME OFF"
     )
 
     # Normalize target names to the ones exported by an installed gRPC package

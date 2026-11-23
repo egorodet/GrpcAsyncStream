@@ -10,6 +10,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <functional>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -69,13 +70,7 @@ struct FakeStreamFixture
         }
     }
 
-    std::vector<std::uint64_t> writtenIds() const
-    {
-        std::vector<std::uint64_t> ids;
-        for (const Request& request : call->writes())
-            ids.push_back(request.id());
-        return ids;
-    }
+    std::vector<std::uint64_t> writtenIds() const { return idsOf(call->writes()); }
 
     void checkNoViolations() const
     {
@@ -188,16 +183,14 @@ TEST_CASE("Responses are delivered in order and the read is re-armed", "[lifecyc
     FakeStreamFixture f;
     f.openStarted();
 
-    for (std::uint64_t id = 1; id <= 5; ++id)
+    for (const std::uint64_t id : std::views::iota(std::uint64_t{1}, std::uint64_t{6}))
     {
         REQUIRE(f.call->readPending());
         f.call->deliver(makeResponse(id));
         REQUIRE(f.pump([&] { return f.responses.size() == id; }));
     }
 
-    REQUIRE(f.responses.size() == 5);
-    for (std::size_t i = 0; i < f.responses.size(); ++i)
-        CHECK(f.responses[i].id() == i + 1);
+    CHECK(idsOf(f.responses) == std::vector<std::uint64_t>{1, 2, 3, 4, 5});
     CHECK(f.call->readPending());
     CHECK(f.stream.isOpen());
     f.checkNoViolations();
@@ -288,8 +281,7 @@ TEST_CASE("Server end of stream: Finish waits for the outstanding write", "[life
 
     const auto& stats = f.stream.writeQueueStats();
     CHECK(stats.discarded_messages == 3);
-    CHECK(stats.submitted_messages ==
-          stats.written_messages + stats.dropped_messages + stats.discarded_messages + stats.queued_messages);
+    CHECK(stats.isConsistent());
     f.checkNoViolations();
 }
 
@@ -418,4 +410,42 @@ TEST_CASE("The destructor releases an active call", "[lifecycle]")
     }
     // The fake stream object has been destroyed (the shared call state survives)
     CHECK(call.use_count() == 1);
+}
+
+TEST_CASE("Concepts accept valid arguments and reject invalid ones", "[lifecycle][concepts]")
+{
+    using Network::ProtobufMessage;
+    using Network::ResponseHandlerFor;
+    using Network::StreamFactoryFor;
+
+    // Message types
+    static_assert(ProtobufMessage<Request>);
+    static_assert(ProtobufMessage<Response>);
+    static_assert(!ProtobufMessage<int>);
+    static_assert(!ProtobufMessage<std::string>);
+
+    // Stream factories (named lambdas: lambdas in unevaluated operands are not
+    // fully supported by every compiler yet)
+    using FakeFactory            = decltype(makeFakeStreamFactory(std::shared_ptr<Call>()));
+    [[maybe_unused]] constexpr auto wrong_factory = [](grpc::ClientContext*, grpc::CompletionQueue*, void*) { return 42; };
+    static_assert(StreamFactoryFor<FakeFactory, Request, Response>);
+    static_assert(!StreamFactoryFor<FakeFactory, Response, Request>); // wrong message order
+    static_assert(!StreamFactoryFor<int (*)(), Request, Response>);
+    static_assert(!StreamFactoryFor<decltype(wrong_factory), Request, Response>);
+
+    // Response handlers: rvalue, const reference and by-value parameters all work
+    [[maybe_unused]] constexpr auto takes_rvalue       = [](Response&&) {};
+    [[maybe_unused]] constexpr auto takes_const_ref    = [](const Response&) {};
+    [[maybe_unused]] constexpr auto takes_value        = [](Response) {};
+    [[maybe_unused]] constexpr auto takes_mutable_ref  = [](Response&) {};
+    [[maybe_unused]] constexpr auto takes_wrong_type   = [](const Request&) {};
+    static_assert(ResponseHandlerFor<decltype(takes_rvalue), Response>);
+    static_assert(ResponseHandlerFor<decltype(takes_const_ref), Response>);
+    static_assert(ResponseHandlerFor<decltype(takes_value), Response>);
+    static_assert(ResponseHandlerFor<std::function<void(Response&&)>, Response>);
+    static_assert(!ResponseHandlerFor<decltype(takes_mutable_ref), Response>); // cannot bind an rvalue
+    static_assert(!ResponseHandlerFor<decltype(takes_wrong_type), Response>);
+    static_assert(!ResponseHandlerFor<int, Response>);
+
+    SUCCEED("checked at compile time");
 }

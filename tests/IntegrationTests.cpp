@@ -9,7 +9,9 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
+#include <algorithm>
 #include <functional>
+#include <ranges>
 #include <string>
 #include <thread>
 #include <vector>
@@ -83,9 +85,9 @@ TEST_CASE("Echo round-trip preserves order and payloads", "[integration]")
     }
 
     REQUIRE(f.pump([&] { return f.responses.size() == count; }));
+    CHECK(std::ranges::equal(idsOf(f.responses), std::views::iota(std::uint64_t{0}, count)));
     for (std::uint64_t id = 0; id < count; ++id)
     {
-        CHECK(f.responses[id].id() == id);
         CHECK(f.responses[id].payload() == "payload-" + std::to_string(id));
         CHECK(f.responses[id].server_seq() == id);
     }
@@ -128,7 +130,7 @@ TEST_CASE("Client metadata configured by the factory reaches the server", "[inte
 {
     ServerFixture f;
     REQUIRE(f.stream.open([&](grpc::ClientContext* context, grpc::CompletionQueue* cq, void* tag) {
-        context->AddMetadata(metadata_key, "hello-metadata");
+        context->AddMetadata(std::string(metadata_key), "hello-metadata");
         return f.stub->AsyncChat(context, cq, tag);
     }));
 
@@ -221,7 +223,7 @@ TEST_CASE("A deadline set in the factory ends a stalled call", "[integration]")
 
 TEST_CASE("An unreachable server reports UNAVAILABLE", "[integration]")
 {
-    auto   channel = grpc::CreateChannel("unix:/nonexistent/grpc-async-stream.sock", grpc::InsecureChannelCredentials());
+    auto channel = grpc::CreateChannel(std::string(unreachable_server_address), grpc::InsecureChannelCredentials());
     auto   stub    = proto::TestStream::NewStub(channel);
     Stream stream;
     REQUIRE(stream.open([&](grpc::ClientContext* context, grpc::CompletionQueue* cq, void* tag) {
@@ -269,10 +271,8 @@ TEST_CASE("A slow server makes the bounded queue drop excess requests", "[integr
     ServerFixture f;
     f.server.service().setReadDelay(std::chrono::microseconds(100));
 
-    WriteQueueLimits limits;
-    limits.max_messages    = 64;
-    limits.max_bytes       = 32 * 1024;
-    limits.overflow_policy = policy;
+    constexpr std::size_t  max_bytes = 32 * 1024;
+    const WriteQueueLimits limits{.max_messages = 64, .max_bytes = max_bytes, .overflow_policy = policy};
     f.stream.setWriteQueueLimits(limits);
     REQUIRE(f.open());
 
@@ -310,6 +310,6 @@ TEST_CASE("A slow server makes the bounded queue drop excess requests", "[integr
     CHECK(f.responses.size() == stats.written_messages);
 
     // Echoes arrive in order of the written requests
-    for (std::size_t i = 1; i < f.responses.size(); ++i)
-        REQUIRE(f.responses[i - 1].id() < f.responses[i].id());
+    CHECK(idsStrictlyIncrease(f.responses));
+    CHECK(stats.isConsistent());
 }

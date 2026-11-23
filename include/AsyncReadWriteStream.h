@@ -1,15 +1,20 @@
 #pragma once
 
+// Requires C++20 (concepts, designated initializers, defaulted comparisons).
+
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
 #include <algorithm>
 #include <chrono>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <limits>
 #include <memory>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace Network
@@ -27,6 +32,17 @@ enum class WriteOverflowPolicy
     DropOldest,
 };
 
+[[nodiscard]] constexpr std::string_view toString(WriteOverflowPolicy policy) noexcept
+{
+    switch (policy)
+    {
+        using enum WriteOverflowPolicy;
+    case DropNewest: return "DropNewest";
+    case DropOldest: return "DropOldest";
+    }
+    return "Unknown";
+}
+
 // Limits of the queue of requests waiting to be written into the stream.
 //
 // gRPC allows only one outstanding write per call, so requests sent while a
@@ -36,6 +52,9 @@ enum class WriteOverflowPolicy
 // messages and by their total serialized size; whichever limit is hit first
 // triggers the overflow policy. The single request currently being written is
 // not part of the queue, so at most `max_messages + 1` requests are held.
+//
+// Configure with designated initializers, e.g.
+//   WriteQueueLimits{.max_messages = 256, .overflow_policy = WriteOverflowPolicy::DropNewest}
 struct WriteQueueLimits
 {
     static constexpr std::size_t unlimited = std::numeric_limits<std::size_t>::max();
@@ -47,7 +66,12 @@ struct WriteQueueLimits
     std::size_t max_bytes = 64U * 1024U * 1024U;
     WriteOverflowPolicy overflow_policy = WriteOverflowPolicy::DropOldest;
 
-    static WriteQueueLimits unbounded() { return {unlimited, unlimited, WriteOverflowPolicy::DropNewest}; }
+    [[nodiscard]] static constexpr WriteQueueLimits unbounded() noexcept
+    {
+        return {.max_messages = unlimited, .max_bytes = unlimited, .overflow_policy = WriteOverflowPolicy::DropNewest};
+    }
+
+    friend constexpr bool operator==(const WriteQueueLimits&, const WriteQueueLimits&) = default;
 };
 
 // Counters of the write queue for the current (or the last) call. Reset by open().
@@ -65,6 +89,13 @@ struct WriteQueueStats
     bool          write_in_flight      = false; // a request write is currently outstanding
 
     // Invariant: submitted == written + dropped + discarded + queued + (write_in_flight ? 1 : 0)
+    [[nodiscard]] constexpr bool isConsistent() const noexcept
+    {
+        return submitted_messages ==
+               written_messages + dropped_messages + discarded_messages + queued_messages + (write_in_flight ? 1U : 0U);
+    }
+
+    friend constexpr bool operator==(const WriteQueueStats&, const WriteQueueStats&) = default;
 };
 
 // Outcome of AsyncReadWriteStream::sendRequest().
@@ -79,11 +110,80 @@ enum class SendResult
 };
 
 // True when the request will be written into the stream (unless the call ends first).
-[[nodiscard]] constexpr bool isAccepted(SendResult result)
+[[nodiscard("check whether the request was accepted")]] constexpr bool isAccepted(SendResult result) noexcept
 {
-    return result == SendResult::Written || result == SendResult::Queued ||
-           result == SendResult::QueuedDroppedOldest;
+    using enum SendResult;
+    return result == Written || result == Queued || result == QueuedDroppedOldest;
 }
+
+[[nodiscard]] constexpr std::string_view toString(SendResult result) noexcept
+{
+    switch (result)
+    {
+        using enum SendResult;
+    case Written:             return "Written";
+    case Queued:              return "Queued";
+    case QueuedDroppedOldest: return "QueuedDroppedOldest";
+    case Dropped:             return "Dropped";
+    case NotWritable:         return "NotWritable";
+    }
+    return "Unknown";
+}
+
+// ---------------------------------------------------------------------------
+// Implementation details
+// ---------------------------------------------------------------------------
+
+namespace detail
+{
+
+// States of a call. Declared outside the class template so that the enum is
+// not a dependent type (required for `using enum`).
+enum class StreamState
+{
+    Closed,      // no call
+    Open,        // reading and writing
+    HalfClosing, // writesDone() requested, flushing the queued writes
+    HalfClosed,  // WritesDone issued, still reading
+    Finishing,   // server ended the stream or a write failed, awaiting Finish
+};
+
+// Operation tags. Each stream owns its completion queue, so small integers are
+// sufficient as unique tags and do not depend on member addresses.
+enum class StreamTag : std::uintptr_t
+{
+    Start = 1,
+    Read,
+    Write,
+    WritesDone,
+    Finish,
+};
+
+} // namespace detail
+
+// ---------------------------------------------------------------------------
+// Concepts
+// ---------------------------------------------------------------------------
+
+// A protobuf message (or a type with the same interface) usable as request or response
+template<typename Message>
+concept ProtobufMessage = std::default_initializable<Message> && std::movable<Message> &&
+                          requires(Message& message, const Message& const_message) {
+                              { const_message.ByteSizeLong() } -> std::convertible_to<std::size_t>;
+                              message.Clear();
+                          };
+
+// The callable passed to AsyncReadWriteStream::open(): creates the call with an
+// Async* stub method, e.g. [&](auto* ctx, auto* cq, void* tag) { return stub->AsyncChat(ctx, cq, tag); }
+template<typename Factory, typename RequestProto, typename ResponseProto>
+concept StreamFactoryFor =
+    std::invocable<Factory, grpc::ClientContext*, grpc::CompletionQueue*, void*> &&
+    std::convertible_to<std::invoke_result_t<Factory, grpc::ClientContext*, grpc::CompletionQueue*, void*>,
+                        std::unique_ptr<grpc::ClientAsyncReaderWriterInterface<RequestProto, ResponseProto>>>;
+
+// The callable receiving responses in AsyncReadWriteStream::poll() / pollFor()
+template<typename Handler, typename ResponseProto>
+concept ResponseHandlerFor = std::invocable<Handler&, ResponseProto&&>;
 
 // A wrapper over the asynchronous bidirectional client stream
 // (grpc::ClientAsyncReaderWriterInterface) that encapsulates the generic gRPC
@@ -95,7 +195,7 @@ enum class SendResult
 //
 // Threading: NOT thread-safe. open(), close(), sendRequest(), writesDone(),
 // setWriteQueueLimits() and poll() must all be called from the same thread.
-template<typename RequestProto, typename ResponseProto>
+template<ProtobufMessage RequestProto, ProtobufMessage ResponseProto>
 class AsyncReadWriteStream
 {
 public:
@@ -123,7 +223,7 @@ public:
     //   stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     //       return stub->AsyncOpenRadarStream(ctx, cq, tag);
     //   });
-    template<typename StreamFactory>
+    template<StreamFactoryFor<RequestProto, ResponseProto> StreamFactory>
     bool open(StreamFactory&& stream_factory)
     {
         close();
@@ -170,20 +270,20 @@ public:
     }
 
     // True while the call is active (including half-closed / finishing states).
-    [[nodiscard]] bool isOpen() const { return !!m_stream; }
+    [[nodiscard]] bool isOpen() const noexcept { return m_stream != nullptr; }
 
     // True while new requests may be sent.
-    [[nodiscard]] bool canWrite() const { return m_state == State::Open; }
+    [[nodiscard]] bool canWrite() const noexcept { return m_state == State::Open; }
 
     // Final status of the last call: the server status after a regular end of the
     // stream, CANCELLED after a client-side close(), OK while the call is active.
-    [[nodiscard]] const grpc::Status& status() const { return m_status; }
+    [[nodiscard]] const grpc::Status& status() const noexcept { return m_status; }
 
-    [[nodiscard]] AsyncReaderWriterInterface* getReaderWriter() const { return m_stream.get(); }
+    [[nodiscard]] AsyncReaderWriterInterface* getReaderWriter() const noexcept { return m_stream.get(); }
 
     // Write queue limits; may be changed at any time. Tightening the limits
     // immediately applies the overflow policy to the already queued requests.
-    [[nodiscard]] const WriteQueueLimits& writeQueueLimits() const { return m_limits; }
+    [[nodiscard]] const WriteQueueLimits& writeQueueLimits() const noexcept { return m_limits; }
     void setWriteQueueLimits(const WriteQueueLimits& limits)
     {
         m_limits = limits;
@@ -197,10 +297,10 @@ public:
         }
     }
 
-    [[nodiscard]] const WriteQueueStats& writeQueueStats() const { return m_stats; }
+    [[nodiscard]] const WriteQueueStats& writeQueueStats() const noexcept { return m_stats; }
 
     // True while a write (or the start-call / half-close) is outstanding.
-    [[nodiscard]] bool isWriteInProgress() const { return m_write_in_progress; }
+    [[nodiscard]] bool isWriteInProgress() const noexcept { return m_write_in_progress; }
 
     // Enqueues the given request to be written into the stream. Only one write
     // may be outstanding at a time, and none before the start-call has
@@ -214,7 +314,7 @@ public:
             return SendResult::NotWritable;
 
         ++m_stats.submitted_messages;
-        if (!m_write_in_progress)
+        if (!m_write_in_progress) [[likely]]
         {
             startWrite(std::move(request));
             return SendResult::Written;
@@ -241,7 +341,7 @@ public:
     // events. Received responses are passed one by one to the response handler,
     // which may call sendRequest(), writesDone() or close(). Returns false once
     // the call has ended (status() then holds the reason), true otherwise.
-    template<typename ResponseHandler>
+    template<ResponseHandlerFor<ResponseProto> ResponseHandler>
     bool poll(ResponseHandler&& response_handler, std::size_t max_events = 64)
     {
         // An already expired deadline makes AsyncNext return immediately with
@@ -253,7 +353,7 @@ public:
     // Like poll(), but waits up to `timeout` for the first event, which avoids
     // busy polling in a dedicated stream thread. Further already available
     // events are processed without waiting.
-    template<typename ResponseHandler, typename Rep, typename Period>
+    template<ResponseHandlerFor<ResponseProto> ResponseHandler, typename Rep, typename Period>
     bool pollFor(ResponseHandler&& response_handler, std::chrono::duration<Rep, Period> timeout,
                  std::size_t max_events = 64)
     {
@@ -263,25 +363,8 @@ public:
     }
 
 private:
-    enum class State
-    {
-        Closed,      // no call
-        Open,        // reading and writing
-        HalfClosing, // writesDone() requested, flushing the queued writes
-        HalfClosed,  // WritesDone issued, still reading
-        Finishing,   // server ended the stream or a write failed, awaiting Finish
-    };
-
-    // Each stream owns its completion queue, so small integers are sufficient
-    // as unique operation tags and do not depend on member addresses.
-    enum class Tag : std::uintptr_t
-    {
-        Start = 1,
-        Read,
-        Write,
-        WritesDone,
-        Finish,
-    };
+    using State = detail::StreamState;
+    using Tag   = detail::StreamTag;
 
     struct PendingWrite
     {
@@ -289,8 +372,11 @@ private:
         std::size_t  bytes;
     };
 
-    static void* toTag(Tag tag) { return reinterpret_cast<void*>(static_cast<std::uintptr_t>(tag)); }
-    static Tag   fromTag(void* tag) { return static_cast<Tag>(reinterpret_cast<std::uintptr_t>(tag)); }
+    static void* toTag(Tag tag) noexcept
+    {
+        return reinterpret_cast<void*>(static_cast<std::underlying_type_t<Tag>>(tag));
+    }
+    static Tag fromTag(void* tag) noexcept { return static_cast<Tag>(reinterpret_cast<std::uintptr_t>(tag)); }
 
     template<typename ResponseHandler, typename Deadline>
     bool process(ResponseHandler&& response_handler, std::size_t max_events, const Deadline& first_deadline)
@@ -310,7 +396,7 @@ private:
                 return false;
         }
 
-        return !!m_stream;
+        return m_stream != nullptr;
     }
 
     // Returns false when the call has ended and the stream has been released.
@@ -319,11 +405,12 @@ private:
     {
         switch (tag)
         {
-        case Tag::Start:
+            using enum detail::StreamTag;
+        case Start:
             // The initial metadata has been sent and the write operation set is
             // free again, so the requests queued since open() can be sent now.
             m_write_in_progress = false;
-            if (!ok)
+            if (!ok) [[unlikely]]
             {
                 // The call could not be started. The outstanding read fails as
                 // well, after which Finish retrieves the actual error status.
@@ -333,9 +420,9 @@ private:
             onWriteSlotFree();
             break;
 
-        case Tag::Read:
+        case Read:
             m_read_in_progress = false;
-            if (!ok)
+            if (!ok) [[unlikely]]
             {
                 // No more messages from the server: stop writing and collect
                 // the final status once all outstanding operations are done.
@@ -353,10 +440,10 @@ private:
             }
             break;
 
-        case Tag::Write:
+        case Write:
             m_write_in_progress     = false;
             m_stats.write_in_flight = false;
-            if (!ok)
+            if (!ok) [[unlikely]]
             {
                 // The call is broken, further writes would fail as well
                 ++m_stats.discarded_messages;
@@ -369,14 +456,14 @@ private:
             onWriteSlotFree();
             break;
 
-        case Tag::WritesDone:
+        case WritesDone:
             m_write_in_progress = false;
             if (m_state == State::HalfClosing)
                 m_state = State::HalfClosed;
             tryFinish();
             break;
 
-        case Tag::Finish:
+        case Finish:
             // m_status now holds the final status reported by gRPC
             m_finish_in_progress = false;
             m_state              = State::Closed;
@@ -404,7 +491,7 @@ private:
             dropped_oldest = true;
         }
 
-        m_pending_writes.push_back({std::move(request), bytes});
+        m_pending_writes.push_back({.request = std::move(request), .bytes = bytes});
         ++m_stats.queued_messages;
         m_stats.queued_bytes += bytes;
         m_stats.peak_queued_messages = std::max(m_stats.peak_queued_messages, m_stats.queued_messages);

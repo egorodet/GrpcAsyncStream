@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace TestSupport
 {
@@ -67,8 +68,8 @@ public:
     [[nodiscard]] std::unique_ptr<proto::TestStream::Stub> makeStub() const;
 
 private:
-    TestStreamService             m_service;
-    std::unique_ptr<grpc::Server> m_server;
+    TestStreamService              m_service;
+    std::unique_ptr<grpc::Server>  m_server;
     std::shared_ptr<grpc::Channel> m_channel;
 };
 
@@ -79,6 +80,13 @@ Request makeFail(grpc::StatusCode code, std::string message);
 Request makeEnd();
 
 // Metadata key echoed back by the server in TestResponse.metadata_value
-inline constexpr const char* metadata_key = "x-test-metadata";
+inline constexpr std::string_view metadata_key = "x-test-metadata";
+
+// A server address that refuses connections on every platform
+#if defined(_WIN32)
+inline constexpr std::string_view unreachable_server_address = "ipv4:127.0.0.1:1";
+#else
+inline constexpr std::string_view unreachable_server_address = "unix:/nonexistent/grpc-async-stream.sock";
+#endif
 
 } // namespace TestSupport

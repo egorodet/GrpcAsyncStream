@@ -1,6 +1,6 @@
 # GrpcAsyncStream
 
-A header-only C++17 utility that wraps the gRPC **asynchronous bidirectional client stream**
+A header-only C++20 utility that wraps the gRPC **asynchronous bidirectional client stream**
 (`grpc::ClientAsyncReaderWriterInterface`) behind a small, single-threaded, poll-driven API.
 It owns the completion queue, the operation tags, write serialization, half-close and the final
 `Finish`, so that application code only has to say *how to open the call* and *what to do with each
@@ -40,6 +40,7 @@ if (!stream.status().ok()) { /* inspect error */ }
 - [Bounded write queue](#bounded-write-queue)
 - [API reference](#api-reference)
 - [Building](#building)
+- [Platform support and memory checks](#platform-support-and-memory-checks)
 - [Tests](#tests)
 - [Benchmarks](#benchmarks)
 - [Using the library in your project](#using-the-library-in-your-project)
@@ -52,6 +53,10 @@ if (!stream.status().ok()) { /* inspect error */ }
 
 - **Header-only**, one file: [`include/AsyncReadWriteStream.h`](include/AsyncReadWriteStream.h); works with
   any protobuf request/response pair and any bidirectional-streaming RPC.
+- **Modern C++20**: concepts constrain the message types, the stream factory and the response handler
+  (clear compile errors instead of template noise), limits are configured with designated
+  initializers, and `toString()` / defaulted `operator==` make results and settings easy to log and compare.
+- **Cross-platform**: Linux (GCC, Clang), macOS (Apple Clang) and Windows (MSVC), built and tested in CI.
 - **Non-blocking**: `sendRequest()` and `poll()` never block; `pollFor()` optionally waits for the
   first event so a dedicated stream thread does not have to spin.
 - **Correct gRPC async usage**: at most one outstanding write, no write before the start-call has
@@ -277,6 +282,26 @@ All types live in namespace `Network`.
 | `const WriteQueueStats& writeQueueStats() const` | Queue statistics; see above. |
 | `AsyncReaderWriterInterface* getReaderWriter() const` | The underlying gRPC stream (e.g. for `ReadInitialMetadata`-free advanced use); null when closed. |
 
+### Concepts
+
+The class and its member templates are constrained, so a wrong argument is reported at the call site:
+
+| Concept | Requirement |
+|---|---|
+| `ProtobufMessage<M>` | Default-constructible, movable, with `ByteSizeLong()` and `Clear()`: any protobuf message. Constrains `RequestProto` and `ResponseProto`. |
+| `StreamFactoryFor<F, Req, Resp>` | Callable as `f(grpc::ClientContext*, grpc::CompletionQueue*, void*)`, returning something convertible to `std::unique_ptr<grpc::ClientAsyncReaderWriterInterface<Req, Resp>>`. Constrains `open()`. |
+| `ResponseHandlerFor<H, Resp>` | Callable with `Resp&&` (taking `Resp&&`, `const Resp&` or `Resp` by value all work). Constrains `poll()` and `pollFor()`. |
+
+### Helpers
+
+| Helper | Description |
+|---|---|
+| `constexpr bool isAccepted(SendResult)` | True for `Written`, `Queued`, `QueuedDroppedOldest`. |
+| `constexpr std::string_view toString(SendResult)`, `toString(WriteOverflowPolicy)` | Names for logging. |
+| `WriteQueueStats::isConsistent()` | Checks the accounting invariant below. |
+| `operator==` on `WriteQueueLimits`, `WriteQueueStats` | Defaulted member-wise comparison. |
+| `static constexpr WriteQueueLimits::unbounded()` | No limits (the behaviour before the bounded queue). |
+
 ### `SendResult`
 
 | Value | Meaning | `isAccepted()` |
@@ -289,7 +314,10 @@ All types live in namespace `Network`.
 
 `constexpr bool isAccepted(SendResult)` returns true for the first three.
 
-> **Migrating from the previous API:** `sendRequest()` used to return `bool` (`false` = not writable).
+> **Migrating to 2.0:** the header now requires C++20 (it uses concepts, `using enum` and designated
+> initializers); build with `-std=c++20` / `/std:c++20` or later. The API is otherwise unchanged from 1.1.
+>
+> **Migrating from 1.0:** `sendRequest()` used to return `bool` (`false` = not writable).
 > Replace `if (!stream.sendRequest(r))` with `if (!Network::isAccepted(stream.sendRequest(r)))`,
 > or compare with `SendResult::NotWritable` to keep the exact old meaning. The write queue used to be
 > unbounded; construct the stream with `WriteQueueLimits::unbounded()` for the old behaviour.
@@ -307,7 +335,16 @@ while (stream.pollFor(onResponse, std::chrono::milliseconds(100))) {}
 log(stream.status());
 
 // Telemetry: keep at most ~1 s of 100 Hz samples, newest data wins
-Network::AsyncReadWriteStream<Sample, Ack> telemetry({100, 1 << 20, Network::WriteOverflowPolicy::DropOldest});
+Network::AsyncReadWriteStream<Sample, Ack> telemetry({
+    .max_messages    = 100,
+    .max_bytes       = 1 << 20,
+    .overflow_policy = Network::WriteOverflowPolicy::DropOldest,
+});
+
+// Only change what differs from the defaults (1024 messages, 64 MiB, DropOldest)
+stream.setWriteQueueLimits({.overflow_policy = Network::WriteOverflowPolicy::DropNewest});
+
+log("send result: {}", Network::toString(stream.sendRequest(request)));
 ```
 
 ---
@@ -316,7 +353,11 @@ Network::AsyncReadWriteStream<Sample, Ack> telemetry({100, 1 << 20, Network::Wri
 
 ### Requirements
 
-- CMake ≥ 3.16 and a C++17 compiler (GCC ≥ 9, Clang ≥ 10, Apple Clang ≥ 12, MSVC 2019+).
+- CMake ≥ 3.25.
+- A C++20 compiler with concepts, ranges and `using enum`:
+  GCC ≥ 11, Clang ≥ 16, Apple Clang ≥ 15 (Xcode 15), MSVC ≥ 19.30 (Visual Studio 2022).
+  The library header alone needs less (GCC 11, Clang 13, MSVC 19.29); the newer versions are for
+  the ranges used by the tests and benchmarks.
 - gRPC — either installed (found with `find_package(gRPC CONFIG)`), or built from source automatically.
 - Network access on the first configure: [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) is
   downloaded and fetches Catch2 (and gRPC when it is built from source).
@@ -353,10 +394,64 @@ bundled BoringSSL and zlib are built.
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
 | `GRPC_ASYNC_STREAM_ENABLE_WARNINGS` | `ON` (top level) | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror` (or `/W4 /WX`) for project code |
-| `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS` | `OFF` | Build tests/benchmarks with AddressSanitizer + UBSan |
+| `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS` | `OFF` | Build tests/benchmarks with the sanitizers the toolchain supports (see [Platform support](#platform-support-and-memory-checks)) |
+| `GRPC_ASYNC_STREAM_HEAP_TRACKING` | `ON` | Track the C++ heap in the benchmarks; switched off automatically in sanitizer builds |
 | `GRPC_ASYNC_STREAM_INSTALL` | `ON` (top level) | Install rules and package config (only when gRPC is an installed package) |
 
 When the project is consumed as a subproject, tests, benchmarks, warnings and install rules are off by default.
+
+The whole build (gRPC, protobuf and Abseil included) uses one C++ standard, C++20 at minimum:
+Abseil's ABI depends on the standard, so mixing a C++17-built Abseil with C++20 code is unsafe.
+When using an installed gRPC, make sure it was built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
+
+### Windows notes
+
+- Build from a *Developer Command Prompt / PowerShell for VS 2022* (or with `ilammy/msvc-dev-cmd` in CI);
+  the Ninja generator is recommended, Visual Studio generators work too.
+- gRPC's sources have deep paths: put the CPM cache close to the drive root
+  (`set CPM_SOURCE_CACHE=C:\cpm`) or enable long paths (`git config --system core.longpaths true`).
+- BoringSSL's assembly needs [NASM](https://www.nasm.us/); without it the build uses the portable C
+  implementation (`OPENSSL_NO_ASM`) automatically.
+- All libraries use the dynamic MSVC runtime (`/MD`); the test targets add `/permissive- /Zc:__cplusplus
+  /Zc:preprocessor /utf-8 /bigobj`, `NOMINMAX`, `WIN32_LEAN_AND_MEAN` and `_WIN32_WINNT=0x0A00`.
+
+---
+
+## Platform support and memory checks
+
+| | Linux GCC / Clang | macOS Apple Clang | Windows MSVC | MinGW |
+|---|---|---|---|---|
+| Library, tests, benchmarks | ✔ | ✔ | ✔ | builds, not in CI |
+| Warnings as errors | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion` | same (`-Wno-sign-conversion`) | `/W4`, third-party headers external | same as GCC |
+| AddressSanitizer | ✔ | ✔ | ✔ `/fsanitize=address` | ✘ (option ignored) |
+| UndefinedBehaviorSanitizer | ✔ | ✔ | ✘ not available | ✘ |
+| LeakSanitizer | ✔ | ✘ not supported, `detect_leaks=0` | ✘ | ✘ |
+| Container-overflow checks | ✔ (libstdc++ does not annotate) | ✘ `detect_container_overflow=0` | ✘ `_DISABLE_{VECTOR,STRING}_ANNOTATION` | ✘ |
+| Benchmark heap tracking | ✔ `malloc_usable_size` | ✔ `malloc_size` | ✔ `_msize` | ✔ `_msize` |
+| Benchmark RSS | ✔ `/proc/self/statm` | ✔ `task_info` | ✔ `GetProcessMemoryInfo` | ✔ |
+
+Notes:
+
+- Only this project's code is instrumented by the sanitizers; gRPC and its dependencies are built
+  normally. Checks that need *every* object instrumented are therefore disabled where they would fail
+  or report false positives: MSVC's STL annotations make the linker reject mixed objects (LNK2038),
+  and libc++'s container-overflow annotations misfire when plain gRPC code touches instrumented containers.
+- Heap tracking replaces the global `operator new/delete`, which sanitizers also take over (and they
+  quarantine freed memory), so it is off in sanitizer builds — both by CMake and by a compile-time
+  check in `MemoryTracker.cpp`. The heavy-load benchmark then reports heap figures as `n/a`, still
+  verifies the queue's own byte and message bounds, and skips the heap comparison with a warning.
+- On platforms without a usable-size API, heap tracking is compiled out the same way; without an RSS
+  API, RSS is reported as `n/a`.
+- The test server simulates slow consumers with microsecond delays. `sleep_for` has ~1 ms
+  granularity on Windows (and is coarse on macOS), so the last stretch of each delay is spent
+  yielding: results are comparable across platforms.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds gRPC from source and runs the tests and the
+heavy-load benchmark on six configurations: Linux GCC, Linux Clang with ASan/UBSan/LSan, macOS Apple
+Clang (arm64) with and without ASan/UBSan, and Windows MSVC with and without ASan. A compiler cache
+(ccache / sccache) makes runs after the first one fast.
 
 ---
 
@@ -380,7 +475,8 @@ ctest --test-dir build -LE benchmark --output-on-failure
 ./build/tests/GrpcAsyncStreamTests --list-tests
 ```
 
-Sanitizer build: `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`.
+Sanitizer build: `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
+(the sanitizers and their runtime options are chosen per platform, see the table above; CTest passes the options).
 
 ---
 
@@ -396,7 +492,8 @@ selected by tag:
 | `[queue]` | Cost of `sendRequest()` when enqueueing, rejecting (`DropNewest`, full) and evicting (`DropOldest`, full) |
 | `[load]` | Heavy load against a slow server, comparing unbounded and bounded queues: peak C++ heap growth, peak RSS growth, peak queue size/bytes, written/dropped/received counts, mean send cost, produce and drain time, and p50/p99 send→echo latency |
 
-Memory is measured with `benchmarks/MemoryTracker.cpp`, which replaces global `operator new/delete`
+Memory is measured with `benchmarks/MemoryTracker.cpp`, which (where supported, see
+[Platform support](#platform-support-and-memory-checks)) replaces global `operator new/delete`
 in the benchmark executable to track live and peak C++ heap bytes exactly, and samples the process RSS
 (`/proc/self/statm` on Linux, `task_info` on macOS, `GetProcessMemoryInfo` on Windows).
 
@@ -412,7 +509,7 @@ GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US=50 ./build/benchmarks/GrpcAsyncStreamBen
 
 ### Sample results
 
-Release build, GCC 13.3, gRPC 1.71.0, Linux x86-64 container with 2 vCPUs; client and server in one
+Release build, C++20, GCC 13.3, gRPC 1.71.0, Linux x86-64 container with 2 vCPUs; client and server in one
 process over an in-process channel. Absolute numbers depend on the machine; the relations between the
 configurations are what matters.
 
@@ -420,23 +517,23 @@ configurations are what matters.
 
 | Benchmark | Mean |
 |---|---|
-| ping-pong round-trip, 64 B | 134 µs |
-| ping-pong round-trip, 16 KiB | 170 µs |
-| 1000 pipelined echoes, 64 B / 1 KiB / 16 KiB | 30.5 ms / 31.5 ms / 32.1 ms (≈ 31–33 k msg/s) |
-| `sendRequest()` enqueue | 53 ns |
-| `sendRequest()` drop newest, queue full | 67 ns |
-| `sendRequest()` evict oldest + enqueue, queue full | 85 ns |
+| ping-pong round-trip, 64 B | 141 µs |
+| ping-pong round-trip, 16 KiB | 156 µs |
+| 1000 pipelined echoes, 64 B / 1 KiB / 16 KiB | 28.6 ms / 31.3 ms / 30.2 ms (≈ 32–35 k msg/s) |
+| `sendRequest()` enqueue | 37 ns |
+| `sendRequest()` drop newest, queue full | 80 ns |
+| `sendRequest()` evict oldest + enqueue, queue full | 87 ns |
 
-**Heavy load** — 50 000 × 1 KiB requests produced as fast as possible (polling every 64 sends)
+**Heavy load**: 50 000 × 1 KiB requests produced as fast as possible (polling every 64 sends)
 against a server that consumes at most one request per 20 µs:
 
 | Write queue | Written | Dropped | Peak queue | Peak heap growth | Peak RSS growth | Drain time | p50 / p99 latency |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| default (1024 msgs / 64 MiB, drop oldest) | 1 417 | 48 583 | 1024 | 1.12 MiB | 1.07 MiB | 190 ms | 58 / 187 ms |
-| 256 msgs, drop oldest | 644 | 49 356 | 256 | 0.28 MiB | 0.21 MiB | 48 ms | 0.6 / 47 ms |
-| 256 msgs, drop newest | 649 | 49 351 | 256 | 0.28 MiB | 0.20 MiB | 44 ms | 45 / 46 ms |
-| 256 KiB, drop oldest | 630 | 49 370 | 253 | 0.28 MiB | 0.20 MiB | 47 ms | 0.5 / 45 ms |
-| **unbounded** | 50 000 | 0 | 49 577 | **53.8 MiB** | **54.5 MiB** | **8.6 s** | **4.4 / 8.5 s** |
+| default (1024 msgs / 64 MiB, drop oldest) | 1 796 | 48 204 | 1024 | 1.12 MiB | 1.09 MiB | 89 ms | 11.5 / 87 ms |
+| 256 msgs, drop oldest | 1 034 | 48 966 | 256 | 0.28 MiB | 0.18 MiB | 22 ms | 0.4 / 21 ms |
+| 256 msgs, drop newest | 805 | 49 195 | 256 | 0.28 MiB | 0.19 MiB | 22 ms | 23 / 28 ms |
+| 256 KiB, drop oldest | 1 027 | 48 973 | 253 | 0.28 MiB | 0.19 MiB | 23 ms | 0.4 / 21 ms |
+| **unbounded** | 50 000 | 0 | 49 291 | **53.5 MiB** | **54.2 MiB** | **4.9 s** | **2.5 / 4.8 s** |
 
 What the numbers show:
 
@@ -444,11 +541,11 @@ What the numbers show:
   request) — 50× more here, and without limit for a longer or faster producer. Every bounded
   configuration stays at its configured limit regardless of how many requests are produced.
 - The backlog also turns into **latency**: unbounded, a request waits seconds behind older ones,
-  and closing the stream takes 8.6 s to drain. Bounded queues cap both.
+  and closing the stream takes 4.9 s to drain. Bounded queues cap both.
 - `DropOldest` delivers the *freshest* data (median latency below 1 ms: most delivered requests were
   produced just before they were written), whereas `DropNewest` delivers the *earliest* data with a
   latency equal to the queue's drain time.
-- The cost of the bound itself is negligible: dropping or evicting a request costs 15–30 ns more
+- The cost of the bound itself is negligible: dropping or evicting a request costs 40–50 ns more
   than enqueueing it.
 
 ---
@@ -484,9 +581,11 @@ target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 
 ```
 GrpcAsyncStream/
+├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
+│   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
 │   ├── Dependencies.cmake            # gRPC (package or source) and Catch2 via CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in

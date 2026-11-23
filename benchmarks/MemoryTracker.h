@@ -2,14 +2,20 @@
 
 // Process memory instrumentation for the benchmarks.
 //
-// Linking MemoryTracker.cpp into an executable replaces the global
-// operator new / delete with versions that keep exact counters of the C++
-// heap memory currently allocated (live bytes) and its high-water mark.
-// Memory allocated directly with malloc (e.g. by the gRPC C core) is not
-// included; it is covered by the resident set size (RSS) of the process.
+// Heap tracking: when enabled (GRPC_ASYNC_STREAM_HEAP_TRACKING=1, the default
+// outside sanitizer builds) and the C runtime can report the usable size of a
+// heap block (glibc/musl/Android malloc_usable_size, macOS malloc_size, Windows
+// _msize), MemoryTracker.cpp replaces the global operator new / delete with
+// versions that keep exact counters of the live C++ heap bytes and their
+// high-water mark. Memory allocated directly with malloc (e.g. by the gRPC C
+// core) is not included; it is covered by the resident set size (RSS).
+//
+// RSS: /proc/self/statm on Linux, task_info on macOS, GetProcessMemoryInfo on
+// Windows. Elsewhere it is reported as unavailable.
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace MemoryTracker
 {
@@ -21,16 +27,23 @@ struct HeapCounters
     std::uint64_t allocations = 0; // number of allocations since program start
 };
 
-[[nodiscard]] HeapCounters heap();
+// True when operator new / delete are instrumented in this build
+[[nodiscard]] bool isHeapTrackingAvailable() noexcept;
 
-// Restarts the peak tracking from the current live bytes
-void resetPeak();
+// Heap counters, or std::nullopt when heap tracking is not available
+[[nodiscard]] std::optional<HeapCounters> heap() noexcept;
 
-// Current resident set size of the process in bytes (0 if unavailable)
-[[nodiscard]] std::size_t residentBytes();
+// Restarts the peak tracking from the current live bytes (no-op when unavailable)
+void resetPeak() noexcept;
+
+// Current resident set size of the process in bytes, or std::nullopt when unavailable
+[[nodiscard]] std::optional<std::size_t> residentBytes() noexcept;
 
 // Returns free heap pages to the operating system where the allocator supports
 // it, so that a following RSS baseline is not inflated by earlier peaks.
-void releaseFreeMemory();
+void releaseFreeMemory() noexcept;
+
+// Short description of the memory measurements available in this build
+[[nodiscard]] const char* describeAvailability() noexcept;
 
 } // namespace MemoryTracker

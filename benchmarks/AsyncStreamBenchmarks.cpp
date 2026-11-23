@@ -26,6 +26,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
+#include <iterator>
+#include <optional>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -47,7 +50,17 @@ std::uint64_t envOr(const char* name, std::uint64_t fallback)
     return fallback;
 }
 
-double toMiB(double bytes) { return bytes / (1024.0 * 1024.0); }
+constexpr double toMiB(std::int64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); }
+
+// Formats an optional amount of memory in MiB, "n/a" when it was not measured
+std::string formatMiB(const std::optional<std::int64_t>& bytes)
+{
+    if (!bytes)
+        return "n/a";
+    char text[32];
+    std::snprintf(text, sizeof(text), "%.2f", toMiB(*bytes));
+    return text;
+}
 
 // Stream connected to an in-process test server
 struct ServerStream
@@ -92,8 +105,8 @@ struct LoadResult
     std::uint64_t received           = 0;
     std::size_t   peak_queued        = 0;
     std::size_t   peak_queued_bytes  = 0;
-    std::int64_t  heap_peak_growth   = 0; // peak C++ heap above the baseline during the flood
-    std::int64_t  rss_peak_growth    = 0; // peak sampled RSS above the baseline during the flood
+    std::optional<std::int64_t> heap_peak_growth{}; // peak C++ heap above the baseline during the flood (if tracked)
+    std::optional<std::int64_t> rss_peak_growth{};  // peak sampled RSS above the baseline during the flood (if available)
     double        send_ns_per_msg    = 0; // mean sendRequest() cost incl. periodic polling
     double        produce_ms         = 0; // time to submit all requests
     double        drain_ms           = 0; // time from writesDone() to the end of the call
@@ -123,10 +136,15 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     const Network::WriteQueueStats warm_up = s.stream.writeQueueStats();
 
     MemoryTracker::releaseFreeMemory();
-    const std::int64_t heap_baseline = MemoryTracker::heap().live_bytes;
-    const std::size_t  rss_baseline  = MemoryTracker::residentBytes();
-    std::size_t        rss_peak      = rss_baseline;
+    const std::optional<MemoryTracker::HeapCounters> heap_baseline = MemoryTracker::heap();
+    const std::optional<std::size_t>                 rss_baseline  = MemoryTracker::residentBytes();
+    std::size_t                                      rss_peak      = rss_baseline.value_or(0);
     MemoryTracker::resetPeak();
+
+    auto sampleRss = [&] {
+        if (rss_baseline)
+            rss_peak = std::max(rss_peak, MemoryTracker::residentBytes().value_or(0));
+    };
 
     const auto produce_start = Clock::now();
     for (std::uint64_t id = 1; id < config.messages; ++id)
@@ -139,35 +157,40 @@ LoadResult runHeavyLoad(const LoadConfig& config)
         if (id % 64 == 0)
             s.stream.poll(handler);
         if (id % 1024 == 0)
-            rss_peak = std::max(rss_peak, MemoryTracker::residentBytes());
+            sampleRss();
     }
     const auto produce_end = Clock::now();
-    rss_peak               = std::max(rss_peak, MemoryTracker::residentBytes());
-    const auto heap_peak   = MemoryTracker::heap().peak_bytes;
+    sampleRss();
+    const std::optional<MemoryTracker::HeapCounters> heap_after = MemoryTracker::heap();
 
     REQUIRE(s.stream.writesDone());
     REQUIRE(pollUntilClosed(s.stream, handler, std::chrono::minutes(5)));
     const auto drain_end = Clock::now();
 
-    const auto& stats = s.stream.writeQueueStats();
-    LoadResult  result;
-    result.name              = config.name;
-    result.submitted         = stats.submitted_messages - warm_up.submitted_messages;
-    result.written           = stats.written_messages - warm_up.written_messages;
-    result.dropped           = stats.dropped_messages - warm_up.dropped_messages;
-    result.received          = latencies_ms.size();
-    result.peak_queued       = stats.peak_queued_messages;
-    result.peak_queued_bytes = stats.peak_queued_bytes;
-    result.heap_peak_growth  = heap_peak - heap_baseline;
-    result.rss_peak_growth   = static_cast<std::int64_t>(rss_peak) - static_cast<std::int64_t>(rss_baseline);
-    result.produce_ms        = std::chrono::duration<double, std::milli>(produce_end - produce_start).count();
-    result.send_ns_per_msg   = result.produce_ms * 1e6 / static_cast<double>(config.messages - 1);
-    result.drain_ms          = std::chrono::duration<double, std::milli>(drain_end - produce_end).count();
-    result.status_ok         = s.stream.status().ok();
+    const auto& stats      = s.stream.writeQueueStats();
+    const auto  produce_ms = std::chrono::duration<double, std::milli>(produce_end - produce_start).count();
+
+    LoadResult result{
+        .name              = config.name,
+        .submitted         = stats.submitted_messages - warm_up.submitted_messages,
+        .written           = stats.written_messages - warm_up.written_messages,
+        .dropped           = stats.dropped_messages - warm_up.dropped_messages,
+        .received          = latencies_ms.size(),
+        .peak_queued       = stats.peak_queued_messages,
+        .peak_queued_bytes = stats.peak_queued_bytes,
+        .send_ns_per_msg   = produce_ms * 1e6 / static_cast<double>(config.messages - 1),
+        .produce_ms        = produce_ms,
+        .drain_ms          = std::chrono::duration<double, std::milli>(drain_end - produce_end).count(),
+        .status_ok         = s.stream.status().ok(),
+    };
+    if (heap_baseline && heap_after)
+        result.heap_peak_growth = heap_after->peak_bytes - heap_baseline->live_bytes;
+    if (rss_baseline)
+        result.rss_peak_growth = static_cast<std::int64_t>(rss_peak) - static_cast<std::int64_t>(*rss_baseline);
 
     if (!latencies_ms.empty())
     {
-        std::sort(latencies_ms.begin(), latencies_ms.end());
+        std::ranges::sort(latencies_ms);
         auto percentile = [&](double p) {
             const auto index = static_cast<std::size_t>(p * static_cast<double>(latencies_ms.size() - 1));
             return latencies_ms[index];
@@ -181,32 +204,29 @@ LoadResult runHeavyLoad(const LoadConfig& config)
 
 void printLoadResults(const LoadConfig& sample, const std::vector<LoadResult>& results)
 {
-    std::printf("\nHeavy load: %llu requests x %zu B payload, server consumes one request per >= %lld us\n",
+    std::printf("\nHeavy load: %llu requests x %zu B payload, server consumes one request per >= %lld us\n"
+                "Memory measurements: %s\n",
                 static_cast<unsigned long long>(sample.messages - 1), sample.payload_bytes,
-                static_cast<long long>(sample.server_read_delay.count()));
+                static_cast<long long>(sample.server_read_delay.count()), MemoryTracker::describeAvailability());
     std::printf("%-34s %9s %9s %9s %8s %10s %10s %10s %9s %9s %9s %9s %9s\n", "write queue", "written", "dropped",
                 "received", "peak q", "peak q MiB", "heap MiB", "RSS MiB", "send ns", "send ms", "drain ms",
                 "p50 ms", "p99 ms");
     for (const LoadResult& r : results)
     {
-        std::printf("%-34s %9llu %9llu %9llu %8zu %10.2f %10.2f %10.2f %9.0f %9.1f %9.1f %9.1f %9.1f\n",
+        std::printf("%-34s %9llu %9llu %9llu %8zu %10.2f %10s %10s %9.0f %9.1f %9.1f %9.1f %9.1f\n",
                     r.name.c_str(), static_cast<unsigned long long>(r.written),
                     static_cast<unsigned long long>(r.dropped), static_cast<unsigned long long>(r.received),
-                    r.peak_queued, toMiB(static_cast<double>(r.peak_queued_bytes)),
-                    toMiB(static_cast<double>(r.heap_peak_growth)), toMiB(static_cast<double>(r.rss_peak_growth)),
+                    r.peak_queued, toMiB(static_cast<std::int64_t>(r.peak_queued_bytes)),
+                    formatMiB(r.heap_peak_growth).c_str(), formatMiB(r.rss_peak_growth).c_str(),
                     r.send_ns_per_msg, r.produce_ms, r.drain_ms, r.latency_p50_ms, r.latency_p99_ms);
     }
     std::printf("\n");
     std::fflush(stdout);
 }
 
-WriteQueueLimits makeLimits(std::size_t max_messages, std::size_t max_bytes, WriteOverflowPolicy policy)
+constexpr WriteQueueLimits makeLimits(std::size_t max_messages, std::size_t max_bytes, WriteOverflowPolicy policy)
 {
-    WriteQueueLimits limits;
-    limits.max_messages    = max_messages;
-    limits.max_bytes       = max_bytes;
-    limits.overflow_policy = policy;
-    return limits;
+    return {.max_messages = max_messages, .max_bytes = max_bytes, .overflow_policy = policy};
 }
 
 } // namespace
@@ -313,22 +333,27 @@ TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queue
     const std::size_t   payload_bytes = static_cast<std::size_t>(envOr("GRPC_ASYNC_STREAM_BENCH_PAYLOAD", 1024));
     const auto          server_delay  = std::chrono::microseconds(envOr("GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US", 20));
 
+    auto config = [&](std::string name, const WriteQueueLimits& limits) {
+        return LoadConfig{.name              = std::move(name),
+                          .limits            = limits,
+                          .messages          = messages,
+                          .payload_bytes     = payload_bytes,
+                          .server_read_delay = server_delay};
+    };
+    constexpr auto unlimited = WriteQueueLimits::unlimited;
+
     // Bounded configurations run first: RSS rarely shrinks after the unbounded
     // run, which would hide the RSS growth of the runs following it.
     const std::vector<LoadConfig> configs = {
-        {"default: 1024 msgs/64 MiB, oldest", WriteQueueLimits{}, messages, payload_bytes, server_delay},
-        {"256 msgs, drop oldest", makeLimits(256, WriteQueueLimits::unlimited, WriteOverflowPolicy::DropOldest),
-         messages, payload_bytes, server_delay},
-        {"256 msgs, drop newest", makeLimits(256, WriteQueueLimits::unlimited, WriteOverflowPolicy::DropNewest),
-         messages, payload_bytes, server_delay},
-        {"256 KiB, drop oldest", makeLimits(WriteQueueLimits::unlimited, 256 * 1024, WriteOverflowPolicy::DropOldest),
-         messages, payload_bytes, server_delay},
-        {"unbounded", WriteQueueLimits::unbounded(), messages, payload_bytes, server_delay},
+        config("default: 1024 msgs/64 MiB, oldest", WriteQueueLimits{}),
+        config("256 msgs, drop oldest", makeLimits(256, unlimited, WriteOverflowPolicy::DropOldest)),
+        config("256 msgs, drop newest", makeLimits(256, unlimited, WriteOverflowPolicy::DropNewest)),
+        config("256 KiB, drop oldest", makeLimits(unlimited, 256 * 1024, WriteOverflowPolicy::DropOldest)),
+        config("unbounded", WriteQueueLimits::unbounded()),
     };
 
     std::vector<LoadResult> results;
-    for (const LoadConfig& config : configs)
-        results.push_back(runHeavyLoad(config));
+    std::ranges::transform(configs, std::back_inserter(results), runHeavyLoad);
 
     printLoadResults(configs.front(), results);
 
@@ -347,7 +372,14 @@ TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queue
         CHECK(r.peak_queued_bytes <= limits.max_bytes);
         CHECK(r.written + r.dropped == r.submitted);
         CHECK(r.received == r.written);
-        // The bounded queue must keep the heap far below the unbounded case
-        CHECK(r.heap_peak_growth < unbounded.heap_peak_growth / 2);
+
+        // The bounded queue must keep the heap far below the unbounded case. The
+        // heap is only compared where it is tracked exactly: RSS is too coarse,
+        // and in sanitizer builds the allocator quarantines freed memory.
+        if (r.heap_peak_growth && unbounded.heap_peak_growth)
+            CHECK(*r.heap_peak_growth < *unbounded.heap_peak_growth / 2);
     }
+
+    if (!MemoryTracker::isHeapTrackingAvailable())
+        WARN("Heap comparison skipped: " << MemoryTracker::describeAvailability());
 }

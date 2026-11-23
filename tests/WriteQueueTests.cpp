@@ -11,6 +11,7 @@
 #include <catch2/generators/catch_generators.hpp>
 
 #include <functional>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -28,13 +29,9 @@ using Call   = FakeCall<Request, Response>;
 
 constexpr std::size_t unlimited = WriteQueueLimits::unlimited;
 
-WriteQueueLimits limits(std::size_t max_messages, std::size_t max_bytes, WriteOverflowPolicy policy)
+constexpr WriteQueueLimits limits(std::size_t max_messages, std::size_t max_bytes, WriteOverflowPolicy policy)
 {
-    WriteQueueLimits result;
-    result.max_messages    = max_messages;
-    result.max_bytes       = max_bytes;
-    result.overflow_policy = policy;
-    return result;
+    return {.max_messages = max_messages, .max_bytes = max_bytes, .overflow_policy = policy};
 }
 
 std::size_t sizeOf(const Request& request) { return request.ByteSizeLong(); }
@@ -44,8 +41,7 @@ void checkInvariant(const WriteQueueStats& stats)
     INFO("submitted=" << stats.submitted_messages << " written=" << stats.written_messages
                       << " dropped=" << stats.dropped_messages << " discarded=" << stats.discarded_messages
                       << " queued=" << stats.queued_messages << " in_flight=" << stats.write_in_flight);
-    CHECK(stats.submitted_messages == stats.written_messages + stats.dropped_messages + stats.discarded_messages +
-                                          stats.queued_messages + (stats.write_in_flight ? 1U : 0U));
+    CHECK(stats.isConsistent());
 }
 
 // Stream opened over a fake call whose start-call is NOT completed, so every
@@ -79,10 +75,7 @@ struct QueueFixture
             call->completeWrite();
             REQUIRE(pollUntil(stream, handler, [&] { return stream.writeQueueStats().written_messages > written_before; }));
         }
-        std::vector<std::uint64_t> ids;
-        for (const Request& request : call->writes())
-            ids.push_back(request.id());
-        return ids;
+        return idsOf(call->writes());
     }
 };
 
@@ -90,22 +83,29 @@ struct QueueFixture
 
 TEST_CASE("Default write queue limits bound both message count and bytes", "[write-queue]")
 {
-    const WriteQueueLimits defaults;
+    constexpr WriteQueueLimits defaults;
+    static_assert(WriteQueueLimits::unbounded() != defaults);
+    static_assert(limits(1, 2, WriteOverflowPolicy::DropNewest) ==
+                  WriteQueueLimits{.max_messages = 1, .max_bytes = 2, .overflow_policy = WriteOverflowPolicy::DropNewest});
     CHECK(defaults.max_messages == 1024);
     CHECK(defaults.max_bytes == 64U * 1024U * 1024U);
     CHECK(defaults.overflow_policy == WriteOverflowPolicy::DropOldest);
 
     Stream stream;
-    CHECK(stream.writeQueueLimits().max_messages == defaults.max_messages);
-    CHECK(stream.writeQueueLimits().max_bytes == defaults.max_bytes);
+    CHECK(stream.writeQueueLimits() == defaults);
 
     const WriteQueueLimits unbounded = WriteQueueLimits::unbounded();
     CHECK(unbounded.max_messages == unlimited);
     CHECK(unbounded.max_bytes == unlimited);
 }
 
-TEST_CASE("isAccepted() classifies send results", "[write-queue]")
+TEST_CASE("isAccepted() and toString() describe send results", "[write-queue]")
 {
+    static_assert(Network::isAccepted(SendResult::Written));
+    static_assert(Network::toString(SendResult::QueuedDroppedOldest) == "QueuedDroppedOldest");
+    static_assert(Network::toString(WriteOverflowPolicy::DropNewest) == "DropNewest");
+    CHECK(Catch::Detail::stringify(SendResult::Dropped) == "Dropped");
+
     CHECK(Network::isAccepted(SendResult::Written));
     CHECK(Network::isAccepted(SendResult::Queued));
     CHECK(Network::isAccepted(SendResult::QueuedDroppedOldest));
@@ -278,7 +278,7 @@ TEST_CASE("Tightening the limits applies the overflow policy to the queued reque
 TEST_CASE("Unbounded limits accept every request", "[write-queue]")
 {
     QueueFixture f(WriteQueueLimits::unbounded());
-    for (std::uint64_t id = 1; id <= 10000; ++id)
+    for (const std::uint64_t id : std::views::iota(std::uint64_t{1}, std::uint64_t{10001}))
         REQUIRE(f.stream.sendRequest(makeEcho(id)) == SendResult::Queued);
     CHECK(f.stream.writeQueueStats().queued_messages == 10000);
     CHECK(f.stream.writeQueueStats().dropped_messages == 0);

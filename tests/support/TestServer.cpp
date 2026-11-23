@@ -1,6 +1,7 @@
 #include "support/TestServer.h"
 
 #include <algorithm>
+#include <optional>
 #include <thread>
 
 namespace TestSupport
@@ -9,18 +10,27 @@ namespace TestSupport
 namespace
 {
 
-// Sleeps for the given time while staying responsive to call cancellation,
-// so slow-server tests do not delay the server shutdown.
+// Waits for the given time while staying responsive to call cancellation, so
+// slow-server tests do not delay the server shutdown. The timer granularity of
+// sleep_for is about 1 ms on Windows (and coarse on macOS), which would make
+// microsecond delays 10-50x longer than requested there; the last stretch of a
+// wait is therefore spent yielding instead of sleeping, on every platform alike.
 void interruptibleSleep(grpc::ServerContext* context, std::chrono::microseconds delay)
 {
-    using clock         = std::chrono::steady_clock;
+    using clock                       = std::chrono::steady_clock;
+    constexpr auto sleep_granularity  = std::chrono::milliseconds(2);
+    constexpr auto cancellation_check = std::chrono::milliseconds(5);
+
     const auto deadline = clock::now() + delay;
     while (!context->IsCancelled())
     {
-        const auto now = clock::now();
-        if (now >= deadline)
+        const auto remaining = deadline - clock::now();
+        if (remaining <= clock::duration::zero())
             return;
-        std::this_thread::sleep_for(std::min<clock::duration>(deadline - now, std::chrono::milliseconds(5)));
+        if (remaining > sleep_granularity)
+            std::this_thread::sleep_for(std::min<clock::duration>(remaining - sleep_granularity, cancellation_check));
+        else
+            std::this_thread::yield();
     }
 }
 
@@ -50,11 +60,12 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
 
     std::string metadata_value;
     const auto& client_metadata = context->client_metadata();
-    if (auto it = client_metadata.find(metadata_key); it != client_metadata.end())
+    if (auto it = client_metadata.find(grpc::string_ref(metadata_key.data(), metadata_key.size()));
+        it != client_metadata.end())
         metadata_value.assign(it->second.data(), it->second.size());
 
     std::uint64_t server_seq = 0;
-    auto          respond    = [&](std::uint64_t id, const std::string& payload) {
+    auto          respond    = [&](std::uint64_t id, const std::string& payload) -> bool {
         Response response;
         response.set_id(id);
         response.set_payload(payload);
@@ -66,8 +77,34 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
         return true;
     };
 
+    // Handles one request: the status ends the call, std::nullopt keeps it going,
+    // and `false` in `stream_ok` means a response could not be written.
+    bool stream_ok    = true;
+    auto handle       = [&](const Request& request) -> std::optional<grpc::Status> {
+        switch (request.command())
+        {
+        case proto::TestRequest::ECHO:
+            stream_ok = respond(request.id(), request.payload());
+            return std::nullopt;
+
+        case proto::TestRequest::BURST:
+            for (std::uint32_t i = 0; i < request.count() && stream_ok; ++i)
+                stream_ok = respond(request.id() + i, request.payload());
+            return std::nullopt;
+
+        case proto::TestRequest::FAIL:
+            return grpc::Status(static_cast<grpc::StatusCode>(request.status_code()), request.payload());
+
+        case proto::TestRequest::END:
+            return grpc::Status::OK;
+
+        default:
+            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Unknown command");
+        }
+    };
+
     Request request;
-    for (;;)
+    while (stream_ok)
     {
         if (const auto delay = m_read_delay_us.load(); delay > 0)
             interruptibleSleep(context, std::chrono::microseconds(delay));
@@ -80,34 +117,13 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
         if (request.delay_us() > 0)
             interruptibleSleep(context, std::chrono::microseconds(request.delay_us()));
 
-        switch (request.command())
+        if (std::optional<grpc::Status> final_status = handle(request))
         {
-        case proto::TestRequest::ECHO:
-            if (!respond(request.id(), request.payload()))
-                goto stream_broken;
-            break;
-
-        case proto::TestRequest::BURST:
-            for (std::uint32_t i = 0; i < request.count(); ++i)
-                if (!respond(request.id() + i, request.payload()))
-                    goto stream_broken;
-            break;
-
-        case proto::TestRequest::FAIL:
             ++m_finished_calls;
-            return grpc::Status(static_cast<grpc::StatusCode>(request.status_code()), request.payload());
-
-        case proto::TestRequest::END:
-            ++m_finished_calls;
-            return grpc::Status::OK;
-
-        default:
-            ++m_finished_calls;
-            return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Unknown command");
+            return *std::move(final_status);
         }
     }
 
-stream_broken:
     if (context->IsCancelled())
     {
         ++m_cancelled_calls;
