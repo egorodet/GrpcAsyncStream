@@ -23,6 +23,10 @@ option(GRPC_ASYNC_STREAM_ENABLE_WARNINGS  "Compile tests with extra warnings as 
 option(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS "Build tests with the sanitizers supported by the toolchain" OFF)
 option(GRPC_ASYNC_STREAM_HEAP_TRACKING    "Track C++ heap usage in the benchmarks (off automatically with sanitizers)" ON)
 option(GRPC_ASYNC_STREAM_INSTALL          "Generate install and package-config rules"        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
+# A gRPC built from source by this project only serves its own tests and benchmarks
+# when it is the top-level project, and they use insecure (in-process) channels only
+option(GRPC_ASYNC_STREAM_GRPC_UNSECURE    "When gRPC is built from source, use grpc++_unsecure (no TLS, xDS, RE2) and skip BoringSSL/OpenSSL"
+       ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 option(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS "Provide the GrpcAsyncStream::TestUtils target (grpc_test_utils headers) for tests of other projects"
        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 

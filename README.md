@@ -418,9 +418,17 @@ With an installed gRPC (e.g. Homebrew `brew install grpc`, vcpkg, or a custom pr
 cmake -S . -B build -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=package -DCMAKE_PREFIX_PATH=/opt/homebrew
 ```
 
-Building gRPC from source compiles ~1500 translation units on the first build (tens of minutes on a
-laptop); subsequent builds reuse it. System OpenSSL and zlib are used when found, otherwise gRPC's
-bundled BoringSSL and zlib are built.
+Building gRPC from source compiles ~1000 translation units on the first build (several minutes to tens of
+minutes on a laptop); subsequent builds reuse it. Only what the tests link is built: the language plugins
+other than `grpc_cpp_plugin`, gRPC's tests and the dependencies' tests and tools are switched off.
+
+As the top-level project, the build uses **`grpc++_unsecure`** (`GRPC_ASYNC_STREAM_GRPC_UNSECURE=ON`):
+the tests only need insecure and in-process channels, so gRPC is built without TLS credentials, xDS and
+RE2-based policies. That is about a third fewer compilations than the full `grpc++`, and no SSL library at
+all: BoringSSL is neither cloned nor built, and a system OpenSSL is not used (so its version does not
+matter). With `GRPC_ASYNC_STREAM_GRPC_UNSECURE=OFF` (the default when this project is a subproject) the
+full `grpc++` is built, using the system OpenSSL when found, otherwise the bundled BoringSSL. zlib is taken
+from the system when found, otherwise built.
 
 ### Dependencies from Conan
 
@@ -454,6 +462,7 @@ the packages are found, they are used as they are.
 | Option | Default | Description |
 |---|---|---|
 | `GRPC_ASYNC_STREAM_GRPC_PROVIDER` | `auto` | `auto`: imported targets or installed package (e.g. from Conan) if available, else fetch; `package`: require imported targets or an installed package; `fetch`: build from source, unless gRPC targets are already imported |
+| `GRPC_ASYNC_STREAM_GRPC_UNSECURE` | `ON` (top level) | When gRPC is built from source, link `grpc++_unsecure` (no TLS, xDS, RE2) and skip BoringSSL/OpenSSL; no effect on a gRPC package |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
 | `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version fetched when no imported targets or installed package is found |
 | `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` | `ON` (top level) | Provide the `GrpcAsyncStream::TestUtils` target; switched on automatically when this project's tests or benchmarks are built |
@@ -479,8 +488,9 @@ built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
   the Ninja generator is recommended, Visual Studio generators work too.
 - gRPC's sources have deep paths: put the CPM cache close to the drive root
   (`set CPM_SOURCE_CACHE=C:\cpm`) or enable long paths (`git config --system core.longpaths true`).
-- BoringSSL's assembly needs [NASM](https://www.nasm.us/); without it the build uses the portable C
-  implementation (`OPENSSL_NO_ASM`) automatically.
+- When BoringSSL is built (`GRPC_ASYNC_STREAM_GRPC_UNSECURE=OFF` without a system OpenSSL), its assembly
+  needs [NASM](https://www.nasm.us/); without it the build uses the portable C implementation
+  (`OPENSSL_NO_ASM`) automatically.
 - All libraries use the dynamic MSVC runtime (`/MD`); the test targets add `/permissive- /Zc:__cplusplus
   /Zc:preprocessor /utf-8 /bigobj`, `NOMINMAX`, `WIN32_LEAN_AND_MEAN` and `_WIN32_WINNT=0x0A00`.
 

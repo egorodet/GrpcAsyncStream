@@ -26,6 +26,12 @@
 #   GrpcAsyncStream_protoc  - path of the protoc executable        (variable)
 #   GrpcAsyncStream_grpc_cpp_plugin - path of grpc_cpp_plugin      (variable, generator expression)
 #   GRPC_ASYNC_STREAM_GRPC_SOURCE    - where gRPC came from: imported, package or fetched (variable)
+#
+# When gRPC is built from source with GRPC_ASYNC_STREAM_GRPC_UNSECURE=ON (default for
+# the top-level project), gRPC::grpc++ refers to grpc++_unsecure: gRPC without TLS
+# credentials, xDS and RE2-based policies. That builds about 40% less of gRPC core,
+# no SSL library at all (BoringSSL is neither cloned nor built, a system OpenSSL is
+# not used) and no RE2. Insecure and in-process channels work as usual.
 
 include_guard(GLOBAL)
 
@@ -88,13 +94,36 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
     message(STATUS "GrpcAsyncStream: building gRPC v${GRPC_ASYNC_STREAM_GRPC_VERSION} from source "
                    "(this takes a while on the first build; set CPM_SOURCE_CACHE to reuse the sources)")
 
+    set(_grpc_submodules
+        "third_party/abseil-cpp"
+        "third_party/protobuf"
+        "third_party/re2"
+        "third_party/cares/cares"
+        "third_party/zlib")
+    set(_grpc_extra_options)
+
     # Prefer system OpenSSL / zlib when available: it saves building BoringSSL and zlib
-    find_package(OpenSSL QUIET)
     find_package(ZLIB QUIET)
-    if(OpenSSL_FOUND)
-        set(_grpc_ssl_provider package)
-    else()
+    if(GRPC_ASYNC_STREAM_GRPC_UNSECURE)
+        # grpc++_unsecure links no SSL library. gRPC still configures one, so point
+        # its BoringSSL module at an empty directory: nothing is cloned or built,
+        # and no system OpenSSL (whatever its version) is touched.
+        set(_grpc_no_ssl_dir "${CMAKE_CURRENT_BINARY_DIR}/_deps/grpc-no-boringssl")
+        file(MAKE_DIRECTORY "${_grpc_no_ssl_dir}")
+        file(CONFIGURE OUTPUT "${_grpc_no_ssl_dir}/CMakeLists.txt"
+             CONTENT "# Intentionally empty: GrpcAsyncStream builds grpc++_unsecure, which needs no SSL library\n")
         set(_grpc_ssl_provider module)
+        list(APPEND _grpc_extra_options "BORINGSSL_ROOT_DIR ${_grpc_no_ssl_dir}")
+        message(STATUS "GrpcAsyncStream: building gRPC without TLS (grpc++_unsecure); "
+                       "set GRPC_ASYNC_STREAM_GRPC_UNSECURE=OFF for the full library")
+    else()
+        find_package(OpenSSL QUIET)
+        if(OpenSSL_FOUND)
+            set(_grpc_ssl_provider package)
+        else()
+            set(_grpc_ssl_provider module)
+            list(APPEND _grpc_submodules "third_party/boringssl-with-bazel")
+        endif()
     endif()
     if(ZLIB_FOUND)
         set(_grpc_zlib_provider package)
@@ -105,7 +134,7 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
     # Bundled BoringSSL needs NASM for its assembly on Windows; without NASM use
     # the portable C implementation instead of failing the build
     set(_grpc_openssl_no_asm OFF)
-    if(WIN32 AND _grpc_ssl_provider STREQUAL "module")
+    if(WIN32 AND _grpc_ssl_provider STREQUAL "module" AND NOT GRPC_ASYNC_STREAM_GRPC_UNSECURE)
         find_program(GRPC_ASYNC_STREAM_NASM NAMES nasm)
         if(NOT GRPC_ASYNC_STREAM_NASM)
             set(_grpc_openssl_no_asm ON)
@@ -125,13 +154,7 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
             GIT_TAG v${GRPC_ASYNC_STREAM_GRPC_VERSION}
             GIT_SHALLOW TRUE
             # Only the submodules needed for building the C++ library and the code generator
-            GIT_SUBMODULES
-                "third_party/abseil-cpp"
-                "third_party/protobuf"
-                "third_party/re2"
-                "third_party/cares/cares"
-                "third_party/zlib"
-                "third_party/boringssl-with-bazel"
+            GIT_SUBMODULES ${_grpc_submodules}
             SYSTEM TRUE
             EXCLUDE_FROM_ALL TRUE
             OPTIONS
@@ -166,12 +189,17 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
                 "gRPC_MSVC_STATIC_RUNTIME OFF"
                 "protobuf_MSVC_STATIC_RUNTIME OFF"
                 "ABSL_MSVC_STATIC_RUNTIME OFF"
+                ${_grpc_extra_options}
         )
     endblock()
 
     # Normalize target names to the ones exported by an installed gRPC package
     if(NOT TARGET gRPC::grpc++)
-        add_library(gRPC::grpc++ ALIAS grpc++)
+        if(GRPC_ASYNC_STREAM_GRPC_UNSECURE)
+            add_library(gRPC::grpc++ ALIAS grpc++_unsecure)
+        else()
+            add_library(gRPC::grpc++ ALIAS grpc++)
+        endif()
     endif()
     if(NOT TARGET protobuf::libprotobuf)
         add_library(protobuf::libprotobuf ALIAS libprotobuf)
