@@ -20,31 +20,31 @@ jobs:
       matrix:
         include:
           - name: Linux GCC
-            os: ubuntu-24.04
+            os: ubuntu-latest
             cc: gcc-13
             cxx: g++-13
             build_type: Release
             sanitizers: OFF
           - name: Linux Clang + ASan/UBSan/LSan
-            os: ubuntu-24.04
+            os: ubuntu-latest
             cc: clang
             cxx: clang++
             build_type: Debug
             sanitizers: ON
           - name: macOS Apple Clang
-            os: macos-14
+            os: macos-latest
             build_type: Release
             sanitizers: OFF
           - name: macOS Apple Clang + ASan/UBSan
-            os: macos-14
+            os: macos-latest
             build_type: Debug
             sanitizers: ON
           - name: Windows MSVC
-            os: windows-2022
+            os: windows-latest
             build_type: Release
             sanitizers: OFF
           - name: Windows MSVC + ASan
-            os: windows-2022
+            os: windows-latest
             # Release: sccache cannot cache objects built with /Zi debug information
             build_type: Release
             sanitizers: ON
