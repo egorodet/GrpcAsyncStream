@@ -76,54 +76,61 @@ if(NOT GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
         endif()
     endif()
 
-    CPMAddPackage(
-        NAME gRPC
-        GITHUB_REPOSITORY grpc/grpc
-        GIT_TAG v${GRPC_ASYNC_STREAM_GRPC_VERSION}
-        GIT_SHALLOW TRUE
-        # Only the submodules needed for building the C++ library and the code generator
-        GIT_SUBMODULES
-            "third_party/abseil-cpp"
-            "third_party/protobuf"
-            "third_party/re2"
-            "third_party/cares/cares"
-            "third_party/zlib"
-            "third_party/boringssl-with-bazel"
-        SYSTEM TRUE
-        EXCLUDE_FROM_ALL TRUE
-        OPTIONS
-            "gRPC_BUILD_TESTS OFF"
-            "gRPC_BUILD_CODEGEN ON"
-            "gRPC_BUILD_GRPC_CPP_PLUGIN ON"
-            "gRPC_BUILD_GRPC_CSHARP_PLUGIN OFF"
-            "gRPC_BUILD_GRPC_NODE_PLUGIN OFF"
-            "gRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN OFF"
-            "gRPC_BUILD_GRPC_PHP_PLUGIN OFF"
-            "gRPC_BUILD_GRPC_PYTHON_PLUGIN OFF"
-            "gRPC_BUILD_GRPC_RUBY_PLUGIN OFF"
-            "gRPC_BUILD_CSHARP_EXT OFF"
-            "gRPC_DOWNLOAD_ARCHIVES OFF"
-            "gRPC_INSTALL OFF"
-            "gRPC_SSL_PROVIDER ${_grpc_ssl_provider}"
-            "gRPC_ZLIB_PROVIDER ${_grpc_zlib_provider}"
-            "protobuf_BUILD_TESTS OFF"
-            "protobuf_INSTALL OFF"
-            "protobuf_BUILD_CONFORMANCE OFF"
-            "protobuf_BUILD_EXAMPLES OFF"
-            "utf8_range_ENABLE_TESTS OFF"
-            "utf8_range_ENABLE_INSTALL OFF"
-            "ABSL_PROPAGATE_CXX_STD ON"
-            "ABSL_ENABLE_INSTALL OFF"
-            "ABSL_BUILD_TESTING OFF"
-            "RE2_BUILD_TESTING OFF"
-            "CARES_BUILD_TOOLS OFF"
-            "CARES_INSTALL OFF"
-            "OPENSSL_NO_ASM ${_grpc_openssl_no_asm}"
-            # MSVC: every library links the same (dynamic) C runtime as this project
-            "gRPC_MSVC_STATIC_RUNTIME OFF"
-            "protobuf_MSVC_STATIC_RUNTIME OFF"
-            "ABSL_MSVC_STATIC_RUNTIME OFF"
-    )
+    # CMake 4 removed compatibility with projects requiring CMake < 3.5, and
+    # gRPC's bundled c-ares declares cmake_minimum_required(VERSION 3.1.0), which
+    # CMake 4 rejects ("Compatibility with CMake < 3.5 has been removed"). Raise
+    # the policy floor for the gRPC subtree only; CMake 3.x ignores the variable.
+    block(SCOPE_FOR VARIABLES PROPAGATE gRPC_ADDED gRPC_SOURCE_DIR gRPC_BINARY_DIR)
+        set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+        CPMAddPackage(
+            NAME gRPC
+            GITHUB_REPOSITORY grpc/grpc
+            GIT_TAG v${GRPC_ASYNC_STREAM_GRPC_VERSION}
+            GIT_SHALLOW TRUE
+            # Only the submodules needed for building the C++ library and the code generator
+            GIT_SUBMODULES
+                "third_party/abseil-cpp"
+                "third_party/protobuf"
+                "third_party/re2"
+                "third_party/cares/cares"
+                "third_party/zlib"
+                "third_party/boringssl-with-bazel"
+            SYSTEM TRUE
+            EXCLUDE_FROM_ALL TRUE
+            OPTIONS
+                "gRPC_BUILD_TESTS OFF"
+                "gRPC_BUILD_CODEGEN ON"
+                "gRPC_BUILD_GRPC_CPP_PLUGIN ON"
+                "gRPC_BUILD_GRPC_CSHARP_PLUGIN OFF"
+                "gRPC_BUILD_GRPC_NODE_PLUGIN OFF"
+                "gRPC_BUILD_GRPC_OBJECTIVE_C_PLUGIN OFF"
+                "gRPC_BUILD_GRPC_PHP_PLUGIN OFF"
+                "gRPC_BUILD_GRPC_PYTHON_PLUGIN OFF"
+                "gRPC_BUILD_GRPC_RUBY_PLUGIN OFF"
+                "gRPC_BUILD_CSHARP_EXT OFF"
+                "gRPC_DOWNLOAD_ARCHIVES OFF"
+                "gRPC_INSTALL OFF"
+                "gRPC_SSL_PROVIDER ${_grpc_ssl_provider}"
+                "gRPC_ZLIB_PROVIDER ${_grpc_zlib_provider}"
+                "protobuf_BUILD_TESTS OFF"
+                "protobuf_INSTALL OFF"
+                "protobuf_BUILD_CONFORMANCE OFF"
+                "protobuf_BUILD_EXAMPLES OFF"
+                "utf8_range_ENABLE_TESTS OFF"
+                "utf8_range_ENABLE_INSTALL OFF"
+                "ABSL_PROPAGATE_CXX_STD ON"
+                "ABSL_ENABLE_INSTALL OFF"
+                "ABSL_BUILD_TESTING OFF"
+                "RE2_BUILD_TESTING OFF"
+                "CARES_BUILD_TOOLS OFF"
+                "CARES_INSTALL OFF"
+                "OPENSSL_NO_ASM ${_grpc_openssl_no_asm}"
+                # MSVC: every library links the same (dynamic) C runtime as this project
+                "gRPC_MSVC_STATIC_RUNTIME OFF"
+                "protobuf_MSVC_STATIC_RUNTIME OFF"
+                "ABSL_MSVC_STATIC_RUNTIME OFF"
+        )
+    endblock()
 
     # Normalize target names to the ones exported by an installed gRPC package
     if(NOT TARGET gRPC::grpc++)

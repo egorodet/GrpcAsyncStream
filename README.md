@@ -384,7 +384,8 @@ stream.setWriteQueueLimits({.overflow_policy = grpc_utils::WriteOverflowPolicy::
 
 ### Requirements
 
-- CMake ≥ 3.25.
+- CMake ≥ 3.25, including CMake 4.x. (gRPC's bundled c-ares still declares CMake 3.1 compatibility,
+  which CMake 4 rejects; the build raises `CMAKE_POLICY_VERSION_MINIMUM` to 3.5 for the gRPC subtree only.)
 - A C++20 compiler with concepts, ranges and `using enum`:
   GCC ≥ 11, Clang ≥ 16, Apple Clang ≥ 15 (Xcode 15), MSVC ≥ 19.30 (Visual Studio 2022).
   The library header alone needs less (GCC 11, Clang 13, MSVC 19.29); the newer versions are for
