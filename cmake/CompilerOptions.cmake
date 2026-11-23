@@ -17,6 +17,14 @@
 #     linker rejects mixing instrumented and plain objects (LNK2038 annotate_*).
 #   - macOS: libc++ container-overflow detection reports false positives when
 #     plain (gRPC) code modifies containers created by instrumented code.
+#   - GCC/Clang: GRPC_ASAN_SUPPRESSED is defined. gRPC's public headers change
+#     struct layouts when they detect ASan: gpr_mu (pthread builds) gets an extra
+#     `int* leak_checker` member. On macOS grpc::internal::Mutex wraps gpr_mu, so
+#     grpc::CompletionQueue, grpc::Server etc. would be 8 bytes larger in our code
+#     than in the plain gRPC library (ODR violation -> heap-buffer-overflow in
+#     CompletionQueue's inline constructor, SEGV in ~ServerContextBase).
+#     Set GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED=ON if your gRPC itself is
+#     built with -fsanitize=address, so the layouts match without the define.
 #
 # Results exported to the parent scope:
 #   GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE     - sanitizers are really enabled for this toolchain
@@ -30,6 +38,9 @@ set(GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS)
 set(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS)
 set(GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE OFF)
 set(GRPC_ASYNC_STREAM_TEST_ENVIRONMENT)
+
+option(GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED
+       "The linked gRPC is itself built with AddressSanitizer (don't define GRPC_ASAN_SUPPRESSED)" OFF)
 
 if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
     if(MSVC)
@@ -50,6 +61,10 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
         set(GRPC_ASYNC_STREAM_SANITIZE_COMPILE_OPTIONS
             -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer)
         set(GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS -fsanitize=address,undefined)
+        if(NOT GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED)
+            # Keep gRPC header struct layouts identical to the non-instrumented gRPC library
+            set(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS GRPC_ASAN_SUPPRESSED)
+        endif()
         set(GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE ON)
         if(APPLE)
             # LeakSanitizer is not supported by the macOS (Apple Clang) runtime

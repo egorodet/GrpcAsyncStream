@@ -462,6 +462,7 @@ the packages are found, they are used as they are.
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
 | `GRPC_ASYNC_STREAM_ENABLE_WARNINGS` | `ON` (top level) | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror` (or `/W4 /WX`) for project code |
 | `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS` | `OFF` | Build tests/benchmarks with the sanitizers the toolchain supports (see [Platform support](#platform-support-and-memory-checks)) |
+| `GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED` | `OFF` | The linked gRPC is built with ASan; don't define `GRPC_ASAN_SUPPRESSED` in sanitizer builds |
 | `GRPC_ASYNC_STREAM_HEAP_TRACKING` | `ON` | Track the C++ heap in the benchmarks; switched off automatically in sanitizer builds |
 | `GRPC_ASYNC_STREAM_INSTALL` | `ON` (top level) | Install rules and package config (only when gRPC is an installed package) |
 
@@ -504,6 +505,13 @@ Notes:
   normally. Checks that need *every* object instrumented are therefore disabled where they would fail
   or report false positives: MSVC's STL annotations make the linker reject mixed objects (LNK2038),
   and libc++'s container-overflow annotations misfire when plain gRPC code touches instrumented containers.
+- With GCC/Clang, sanitizer builds define `GRPC_ASAN_SUPPRESSED`. gRPC's public headers change struct
+  layouts when they detect ASan: the pthread-based `gpr_mu` gains a `leak_checker` pointer. On macOS
+  (where gRPC does not use Abseil's mutex) that makes `grpc::CompletionQueue`, `grpc::Server` and friends
+  8 bytes larger in instrumented code than in the plain gRPC library — an ODR violation that shows up as
+  a `heap-buffer-overflow` in `CompletionQueue`'s constructor and crashes in `~ServerContextBase`.
+  If your gRPC is itself built with `-fsanitize=address`, set `GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED=ON`.
+  Product tests that use `GrpcAsyncStream::TestUtils` with ASan against a plain gRPC need the same define.
 - Heap tracking replaces the global `operator new/delete`, which sanitizers also take over (and they
   quarantine freed memory), so it is off in sanitizer builds — both by CMake and by a compile-time
   check in `MemoryTracker.cpp`. The heavy-load benchmark then reports heap figures as `n/a`, still
