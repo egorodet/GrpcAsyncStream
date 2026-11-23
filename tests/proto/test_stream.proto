@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package grpc_async_stream.test;
+
+// Protocol used by the GrpcAsyncStream tests and benchmarks.
+//
+// The client sends TestRequest messages; the server reacts to each one
+// according to its command. All server behaviour needed by the tests
+// (echo, bursts, errors, server-initiated end of stream, slow consumption)
+// is driven from the client side through this message.
+message TestRequest
+{
+    enum Command
+    {
+        ECHO  = 0; // reply with one TestResponse carrying the same id and payload
+        BURST = 1; // reply with `count` responses (ids id, id+1, ...) carrying the payload
+        FAIL  = 2; // end the call with status `status_code` and message `payload`
+        END   = 3; // end the call with OK status without waiting for the client half-close
+    }
+
+    fixed64 id          = 1; // fixed width: message size does not depend on the id
+    Command command     = 2;
+    bytes   payload     = 3;
+    uint32  count       = 4; // BURST: number of responses
+    int32   status_code = 5; // FAIL: grpc::StatusCode to return
+    uint32  delay_us    = 6; // delay applied by the server before handling this request
+}
+
+message TestResponse
+{
+    fixed64 id            = 1;
+    bytes  payload        = 2;
+    string metadata_value = 3; // value of the "x-test-metadata" client metadata, if any
+    uint64 server_seq     = 4; // sequence number of this response within the call
+}
+
+service TestStream
+{
+    rpc Chat(stream TestRequest) returns (stream TestResponse);
+}
