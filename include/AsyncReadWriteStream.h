@@ -1,11 +1,10 @@
 #pragma once
 
-// Requires C++20 (concepts, designated initializers, defaulted comparisons)
-// and magic_enum (https://github.com/Neargye/magic_enum) for enum reflection.
+// Requires C++20 (concepts, designated initializers, defaulted comparisons).
+// Depends only on gRPC and the C++ standard library.
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
-#include <magic_enum/magic_enum.hpp>
 
 #include <algorithm>
 #include <cassert>
@@ -16,8 +15,6 @@
 #include <deque>
 #include <limits>
 #include <memory>
-#include <optional>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 
@@ -110,45 +107,15 @@ enum class SendResult
     return result == Written || result == Queued || result == QueuedDroppedOldest;
 }
 
-// ---------------------------------------------------------------------------
-// Enum reflection (magic_enum)
-// ---------------------------------------------------------------------------
-
-// The public enumerations of this library
-template<typename Enum>
-concept LibraryEnum = std::same_as<Enum, SendResult> || std::same_as<Enum, WriteOverflowPolicy>;
-
-// Name of an enumerator, e.g. "QueuedDroppedOldest"; empty for a value that is not an enumerator.
-template<LibraryEnum Enum>
-[[nodiscard]] constexpr std::string_view toString(Enum value) noexcept
+// States of a call, as reported by AsyncReadWriteStream::state()
+enum class StreamState
 {
-    return magic_enum::enum_name(value);
-}
-
-// Enumerator with the given name (case-sensitive), e.g. from a configuration file;
-// std::nullopt when no enumerator has that name.
-template<LibraryEnum Enum>
-[[nodiscard]] constexpr std::optional<Enum> fromString(std::string_view name) noexcept
-{
-    return magic_enum::enum_cast<Enum>(name);
-}
-
-// Number of enumerators, e.g. to size a per-result histogram: std::array<std::uint64_t, enumCount<SendResult>>
-template<LibraryEnum Enum>
-inline constexpr std::size_t enumCount = magic_enum::enum_count<Enum>();
-
-// All enumerators in declaration order, e.g. to iterate over every policy
-template<LibraryEnum Enum>
-inline constexpr auto enumValues = magic_enum::enum_values<Enum>();
-
-// Position of an enumerator in enumValues, e.g. to index a histogram
-template<LibraryEnum Enum>
-[[nodiscard]] constexpr std::size_t enumIndex(Enum value) noexcept
-{
-    const std::optional<std::size_t> index = magic_enum::enum_index(value);
-    assert(index.has_value() && "not an enumerator");
-    return *index;
-}
+    Closed,      // no call
+    Open,        // reading and writing
+    HalfClosing, // writesDone() requested, flushing the queued requests before WritesDone
+    HalfClosed,  // WritesDone issued, still reading
+    Finishing,   // server ended the stream or a write failed, waiting for the final status
+};
 
 // ---------------------------------------------------------------------------
 // Implementation details
@@ -157,19 +124,10 @@ template<LibraryEnum Enum>
 namespace detail
 {
 
-// States of a call. Declared outside the class template so that the enum is
-// not a dependent type (required for `using enum`).
-enum class StreamState
-{
-    Closed,      // no call
-    Open,        // reading and writing
-    HalfClosing, // writesDone() requested, flushing the queued writes
-    HalfClosed,  // WritesDone issued, still reading
-    Finishing,   // server ended the stream or a write failed, awaiting Finish
-};
-
 // Operation tags. Each stream owns its completion queue, so small integers are
-// sufficient as unique tags and do not depend on member addresses.
+// sufficient as unique tags and do not depend on member addresses. Declared
+// outside the class template so that the enum is not a dependent type
+// (required for `using enum`).
 enum class StreamTag : std::uintptr_t
 {
     Start = 1,
@@ -179,15 +137,7 @@ enum class StreamTag : std::uintptr_t
     Finish,
 };
 
-// magic_enum only reflects values within MAGIC_ENUM_RANGE_MIN..MAX: make sure
-// every enumerator of the library is visible to it.
-static_assert(magic_enum::enum_count<StreamState>() == 5, "StreamState values must be within magic_enum's range");
-static_assert(magic_enum::enum_count<StreamTag>() == 5, "StreamTag values must be within magic_enum's range");
-
 } // namespace detail
-
-static_assert(enumCount<SendResult> == 5 && enumCount<WriteOverflowPolicy> == 2,
-              "every enumerator must be within magic_enum's range");
 
 // ---------------------------------------------------------------------------
 // Concepts
@@ -330,10 +280,8 @@ public:
     // True while a write (or the start-call / half-close) is outstanding.
     [[nodiscard]] bool isWriteInProgress() const noexcept { return m_write_in_progress; }
 
-    // Name of the call's current state, for diagnostics and logging: "Closed",
-    // "Open", "HalfClosing" (flushing queued requests before WritesDone),
-    // "HalfClosed" or "Finishing" (waiting for the final status).
-    [[nodiscard]] std::string_view stateName() const noexcept { return magic_enum::enum_name(m_state); }
+    // Current state of the call, for diagnostics and logging (see StreamState).
+    [[nodiscard]] StreamState state() const noexcept { return m_state; }
 
     // Enqueues the given request to be written into the stream. Only one write
     // may be outstanding at a time, and none before the start-call has
@@ -396,7 +344,7 @@ public:
     }
 
 private:
-    using State = detail::StreamState;
+    using State = StreamState;
     using Tag   = detail::StreamTag;
 
     struct PendingWrite
@@ -405,13 +353,17 @@ private:
         std::size_t  bytes;
     };
 
-    static void* toTag(Tag tag) noexcept { return reinterpret_cast<void*>(magic_enum::enum_integer(tag)); }
+    static void* toTag(Tag tag) noexcept
+    {
+        return reinterpret_cast<void*>(static_cast<std::underlying_type_t<Tag>>(tag));
+    }
 
     static Tag fromTag(void* tag) noexcept
     {
         const auto value = reinterpret_cast<std::uintptr_t>(tag);
         // Only this stream posts to its private completion queue: anything else is a bug
-        assert(magic_enum::enum_contains<Tag>(value) && "unknown completion queue tag");
+        assert(value >= static_cast<std::uintptr_t>(Tag::Start) && value <= static_cast<std::uintptr_t>(Tag::Finish) &&
+               "unknown completion queue tag");
         return static_cast<Tag>(value);
     }
 

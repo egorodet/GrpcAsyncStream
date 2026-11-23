@@ -268,7 +268,7 @@ TEST_CASE("A stream object can run many calls sequentially", "[integration]")
 
 TEST_CASE("A slow server makes the bounded queue drop excess requests", "[integration][load]")
 {
-    const auto policy = GENERATE(from_range(grpc_utils::enumValues<WriteOverflowPolicy>));
+    const auto policy = GENERATE(from_range(magic_enum::enum_values<WriteOverflowPolicy>()));
 
     ServerFixture f;
     f.server.service().setReadDelay(std::chrono::microseconds(100));

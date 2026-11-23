@@ -117,10 +117,10 @@ struct LoadResult
     double        latency_max_ms     = 0;
     bool          status_ok          = false;
 
-    // How many sendRequest() calls returned each SendResult, indexed by grpc_utils::enumIndex()
-    std::array<std::uint64_t, grpc_utils::enumCount<SendResult>> send_results{};
+    // How many sendRequest() calls returned each SendResult, indexed by TestSupport::enumIndex()
+    std::array<std::uint64_t, magic_enum::enum_count<SendResult>()> send_results{};
 
-    [[nodiscard]] std::uint64_t sendResults(SendResult value) const { return send_results[grpc_utils::enumIndex(value)]; }
+    [[nodiscard]] std::uint64_t sendResults(SendResult value) const { return send_results[enumIndex(value)]; }
 };
 
 LoadResult runHeavyLoad(const LoadConfig& config)
@@ -129,7 +129,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     s.server.service().setReadDelay(config.server_read_delay);
 
     // Preallocate everything the measurement itself needs, before the baseline
-    std::array<std::uint64_t, grpc_utils::enumCount<SendResult>> send_results{};
+    std::array<std::uint64_t, magic_enum::enum_count<SendResult>()> send_results{};
     std::vector<Clock::time_point> send_times(config.messages);
     std::vector<double>            latencies_ms;
     latencies_ms.reserve(config.messages);
@@ -159,7 +159,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     {
         send_times[id] = Clock::now();
         const SendResult result = s.stream.sendRequest(makeEcho(id, payload));
-        ++send_results[grpc_utils::enumIndex(result)];
+        ++send_results[enumIndex(result)];
         if (result == SendResult::NotWritable) [[unlikely]]
             FAIL("the stream stopped accepting requests: " << s.stream.status().error_message());
 
@@ -234,8 +234,8 @@ void printLoadResults(const LoadConfig& sample, const std::vector<LoadResult>& r
 
     // sendRequest() outcomes, one column per SendResult enumerator (names from magic_enum)
     std::printf("\nsendRequest() results\n%-34s", "write queue");
-    for (const SendResult value : grpc_utils::enumValues<SendResult>)
-        std::printf(" %20s", std::string(grpc_utils::toString(value)).c_str());
+    for (const SendResult value : magic_enum::enum_values<SendResult>())
+        std::printf(" %20s", std::string(magic_enum::enum_name(value)).c_str());
     std::printf("\n");
     for (const LoadResult& r : results)
     {
@@ -402,7 +402,7 @@ TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queue
     {
         const LoadResult&       r      = results[i];
         const WriteQueueLimits& limits = configs[i].limits;
-        INFO(r.name << " (" << grpc_utils::toString(limits.overflow_policy) << ")");
+        INFO(r.name << " (" << magic_enum::enum_name(limits.overflow_policy) << ")");
 
         // Each policy produces only its own kind of drop
         if (limits.overflow_policy == WriteOverflowPolicy::DropNewest)

@@ -6,14 +6,12 @@
 #                                     package - require an installed gRPC
 #                                     fetch   - always build gRPC from source via CPM
 #
-# magic_enum (required by the header: enum names, parsing, value counts) is
-# taken from an installed package when one is found, otherwise fetched by CPM.
-#
-# Catch2 (tests and benchmarks only) is always taken from CPM, which honours an
-# already-available package when CPM_USE_LOCAL_PACKAGES is ON.
+# Catch2 and magic_enum are used by the tests and benchmarks only; the library
+# header does not depend on them. Catch2 is fetched by CPM (which honours an
+# available package when CPM_USE_LOCAL_PACKAGES is ON); magic_enum is taken from
+# an installed package when one is found, otherwise fetched by CPM.
 #
 # After this file the following normalized targets exist:
-#   magic_enum::magic_enum  - header-only enum reflection library
 #   gRPC::grpc++            - gRPC C++ library
 #   protobuf::libprotobuf   - protobuf runtime
 #   GrpcAsyncStream_protoc  - path of the protoc executable        (variable)
@@ -22,28 +20,6 @@
 include_guard(GLOBAL)
 
 include(${CMAKE_CURRENT_LIST_DIR}/CPM.cmake)
-
-# ---------------------------------------------------------------------------
-# magic_enum
-# ---------------------------------------------------------------------------
-
-# CPMFindPackage prefers an installed magic_enum (find_package) and fetches the
-# pinned release otherwise. When fetched for a project that installs itself,
-# magic_enum is installed alongside, so the exported targets stay consumable.
-CPMFindPackage(
-    NAME magic_enum
-    GITHUB_REPOSITORY Neargye/magic_enum
-    VERSION ${GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION}
-    GIT_SHALLOW TRUE
-    SYSTEM TRUE
-    OPTIONS
-        "MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF"
-        "MAGIC_ENUM_OPT_BUILD_TESTS OFF"
-        "MAGIC_ENUM_OPT_INSTALL ${GRPC_ASYNC_STREAM_INSTALL}"
-)
-if(NOT TARGET magic_enum::magic_enum)
-    message(FATAL_ERROR "GrpcAsyncStream: magic_enum::magic_enum target is not available")
-endif()
 
 # ---------------------------------------------------------------------------
 # gRPC
@@ -192,4 +168,26 @@ function(grpc_async_stream_add_catch2)
     # Make catch_discover_tests() available
     list(APPEND CMAKE_MODULE_PATH "${Catch2_SOURCE_DIR}/extras")
     set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
+endfunction()
+
+# magic_enum: enum names, parsing, value counts and lists in tests and benchmarks
+function(grpc_async_stream_add_magic_enum)
+    if(TARGET magic_enum::magic_enum)
+        return()
+    endif()
+    CPMFindPackage(
+        NAME magic_enum
+        GITHUB_REPOSITORY Neargye/magic_enum
+        VERSION ${GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION}
+        GIT_SHALLOW TRUE
+        SYSTEM TRUE
+        EXCLUDE_FROM_ALL TRUE
+        OPTIONS
+            "MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF"
+            "MAGIC_ENUM_OPT_BUILD_TESTS OFF"
+            "MAGIC_ENUM_OPT_INSTALL OFF"
+    )
+    if(NOT TARGET magic_enum::magic_enum)
+        message(FATAL_ERROR "GrpcAsyncStream: magic_enum::magic_enum target is not available")
+    endif()
 endfunction()

@@ -106,48 +106,44 @@ TEST_CASE("isAccepted() classifies every send result", "[write-queue][enums]")
 {
     static_assert(grpc_utils::isAccepted(SendResult::Written));
 
-    const SendResult result = GENERATE(from_range(grpc_utils::enumValues<SendResult>));
+    const SendResult result = GENERATE(from_range(magic_enum::enum_values<SendResult>()));
     const bool accepted     = result == SendResult::Written || result == SendResult::Queued ||
                           result == SendResult::QueuedDroppedOldest;
     CHECK(grpc_utils::isAccepted(result) == accepted);
 }
 
-TEST_CASE("Enum reflection: names, parsing, counts and indexes", "[write-queue][enums]")
+TEST_CASE("Library enums reflect with magic_enum: names, parsing, counts and indexes", "[write-queue][enums]")
 {
-    using grpc_utils::enumCount;
-    using grpc_utils::enumIndex;
-    using grpc_utils::enumValues;
-    using grpc_utils::fromString;
-    using grpc_utils::toString;
-
-    static_assert(enumCount<SendResult> == 5);
-    static_assert(enumCount<WriteOverflowPolicy> == 2);
-    static_assert(enumValues<WriteOverflowPolicy>[0] == WriteOverflowPolicy::DropNewest);
-    static_assert(toString(SendResult::QueuedDroppedOldest) == "QueuedDroppedOldest");
-    static_assert(toString(WriteOverflowPolicy::DropNewest) == "DropNewest");
-    static_assert(fromString<WriteOverflowPolicy>("DropOldest") == WriteOverflowPolicy::DropOldest);
-    static_assert(enumIndex(SendResult::NotWritable) == enumCount<SendResult> - 1);
+    static_assert(magic_enum::enum_count<SendResult>() == 5);
+    static_assert(magic_enum::enum_count<WriteOverflowPolicy>() == 2);
+    static_assert(magic_enum::enum_values<WriteOverflowPolicy>()[0] == WriteOverflowPolicy::DropNewest);
+    static_assert(magic_enum::enum_name(SendResult::QueuedDroppedOldest) == "QueuedDroppedOldest");
+    static_assert(magic_enum::enum_name(WriteOverflowPolicy::DropNewest) == "DropNewest");
+    static_assert(magic_enum::enum_cast<WriteOverflowPolicy>("DropOldest") == WriteOverflowPolicy::DropOldest);
+    static_assert(enumIndex(SendResult::NotWritable) == magic_enum::enum_count<SendResult>() - 1);
+    static_assert(magic_enum::enum_count<grpc_utils::StreamState>() == 5);
+    static_assert(magic_enum::enum_name(grpc_utils::StreamState::HalfClosing) == "HalfClosing");
 
     SECTION("Every enumerator round-trips through its name and index")
     {
-        const SendResult result = GENERATE(from_range(enumValues<SendResult>));
-        CHECK(fromString<SendResult>(toString(result)) == result);
-        CHECK(enumValues<SendResult>[enumIndex(result)] == result);
-        CHECK(Catch::Detail::stringify(result) == std::string(toString(result)));
+        const SendResult result = GENERATE(from_range(magic_enum::enum_values<SendResult>()));
+        CHECK(magic_enum::enum_cast<SendResult>(magic_enum::enum_name(result)) == result);
+        CHECK(magic_enum::enum_values<SendResult>()[enumIndex(result)] == result);
+        CHECK(Catch::Detail::stringify(result) == std::string(magic_enum::enum_name(result)));
     }
 
     SECTION("Unknown names and values are rejected")
     {
-        CHECK_FALSE(fromString<SendResult>("dropped").has_value()); // case-sensitive
-        CHECK_FALSE(fromString<SendResult>("").has_value());
-        CHECK_FALSE(fromString<WriteOverflowPolicy>("DropAll").has_value());
-        CHECK(toString(static_cast<SendResult>(42)).empty());
+        CHECK_FALSE(magic_enum::enum_cast<SendResult>("dropped").has_value()); // case-sensitive
+        CHECK_FALSE(magic_enum::enum_cast<SendResult>("").has_value());
+        CHECK_FALSE(magic_enum::enum_cast<WriteOverflowPolicy>("DropAll").has_value());
+        CHECK(magic_enum::enum_name(static_cast<SendResult>(42)).empty());
         CHECK(Catch::Detail::stringify(static_cast<SendResult>(42)) == "<invalid enumerator>");
     }
 
     SECTION("A histogram can be indexed by enumerator")
     {
-        std::array<std::uint64_t, enumCount<SendResult>> histogram{};
+        std::array<std::uint64_t, magic_enum::enum_count<SendResult>()> histogram{};
         QueueFixture f(limits(2, unlimited, WriteOverflowPolicy::DropNewest));
         for (const std::uint64_t id : std::views::iota(std::uint64_t{1}, std::uint64_t{6}))
             ++histogram[enumIndex(f.stream.sendRequest(makeEcho(id)))];
@@ -242,7 +238,7 @@ TEST_CASE("The byte limit bounds the total serialized size of queued requests", 
 
 TEST_CASE("A request larger than the byte limit is always dropped", "[write-queue]")
 {
-    const auto policy = GENERATE(from_range(grpc_utils::enumValues<WriteOverflowPolicy>));
+    const auto policy = GENERATE(from_range(magic_enum::enum_values<WriteOverflowPolicy>()));
     QueueFixture f(limits(10, 500, policy));
 
     CHECK(f.stream.sendRequest(makeEcho(1, "small")) == SendResult::Queued);
@@ -259,7 +255,7 @@ TEST_CASE("A request larger than the byte limit is always dropped", "[write-queu
 
 TEST_CASE("A zero message limit disables buffering", "[write-queue]")
 {
-    const auto policy = GENERATE(from_range(grpc_utils::enumValues<WriteOverflowPolicy>));
+    const auto policy = GENERATE(from_range(magic_enum::enum_values<WriteOverflowPolicy>()));
     QueueFixture f(limits(0, unlimited, policy));
 
     // Before the start-call completes nothing can be written
@@ -334,7 +330,7 @@ TEST_CASE("Unbounded limits accept every request", "[write-queue]")
 
 TEST_CASE("A flood of requests never grows the queue beyond its limits", "[write-queue][load]")
 {
-    const auto policy = GENERATE(from_range(grpc_utils::enumValues<WriteOverflowPolicy>));
+    const auto policy = GENERATE(from_range(magic_enum::enum_values<WriteOverflowPolicy>()));
     const std::string payload(256, 'f');
     const std::size_t message_size = sizeOf(makeEcho(1, payload));
 

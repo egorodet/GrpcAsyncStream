@@ -2,6 +2,8 @@
 
 #include <AsyncReadWriteStream.h>
 
+#include <magic_enum/magic_enum.hpp>
+
 #include <catch2/catch_tostring.hpp>
 
 #include <algorithm>
@@ -9,6 +11,8 @@
 #include <concepts>
 #include <cstdint>
 #include <iterator>
+#include <optional>
+#include <stdexcept>
 #include <ranges>
 #include <string>
 #include <string_view>
@@ -74,17 +78,37 @@ bool idsStrictlyIncrease(const Messages& messages)
                                       [](const auto& message) { return message.id(); }) == std::ranges::end(messages);
 }
 
+// The library's public enumerations
+template<typename Enum>
+concept LibraryEnum = std::same_as<Enum, grpc_utils::SendResult> || std::same_as<Enum, grpc_utils::WriteOverflowPolicy> ||
+                      std::same_as<Enum, grpc_utils::StreamState>;
+
+// Position of an enumerator in magic_enum::enum_values<Enum>(), e.g. to index a histogram
+template<LibraryEnum Enum>
+constexpr std::size_t enumIndex(Enum value)
+{
+    const std::optional<std::size_t> index = magic_enum::enum_index(value);
+    if (!index)
+        throw std::invalid_argument("not an enumerator");
+    return *index;
+}
+
+// magic_enum reflects only values within MAGIC_ENUM_RANGE_MIN..MAX: make sure it sees every enumerator
+static_assert(magic_enum::enum_count<grpc_utils::SendResult>() == 5);
+static_assert(magic_enum::enum_count<grpc_utils::WriteOverflowPolicy>() == 2);
+static_assert(magic_enum::enum_count<grpc_utils::StreamState>() == 5);
+
 } // namespace TestSupport
 
 // Readable names of the library's enumerations in Catch2 failure messages
 namespace TestSupport::detail
 {
-template<grpc_utils::LibraryEnum Enum>
+template<LibraryEnum Enum>
 struct EnumStringMaker
 {
     static std::string convert(Enum value)
     {
-        const std::string_view name = grpc_utils::toString(value);
+        const std::string_view name = magic_enum::enum_name(value);
         return name.empty() ? "<invalid enumerator>" : std::string(name);
     }
 };
@@ -98,6 +122,11 @@ struct Catch::StringMaker<grpc_utils::SendResult> : TestSupport::detail::EnumStr
 template<>
 struct Catch::StringMaker<grpc_utils::WriteOverflowPolicy>
     : TestSupport::detail::EnumStringMaker<grpc_utils::WriteOverflowPolicy>
+{
+};
+
+template<>
+struct Catch::StringMaker<grpc_utils::StreamState> : TestSupport::detail::EnumStringMaker<grpc_utils::StreamState>
 {
 };
 

@@ -19,6 +19,7 @@ namespace
 
 using namespace TestSupport;
 using grpc_utils::SendResult;
+using grpc_utils::StreamState;
 
 using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
 using Call   = FakeCall<Request, Response>;
@@ -85,7 +86,7 @@ struct FakeStreamFixture
 TEST_CASE("A stream is closed until opened", "[lifecycle]")
 {
     Stream stream;
-    CHECK(stream.stateName() == "Closed");
+    CHECK(stream.state() == StreamState::Closed);
     CHECK_FALSE(stream.isOpen());
     CHECK_FALSE(stream.canWrite());
     CHECK(stream.getReaderWriter() == nullptr);
@@ -133,7 +134,7 @@ TEST_CASE("Requests sent before the start-call completes are queued, not written
 
     CHECK(f.stream.isOpen());
     CHECK(f.stream.canWrite());
-    CHECK(f.stream.stateName() == "Open");
+    CHECK(f.stream.state() == StreamState::Open);
     CHECK(f.call->readPending());
     CHECK(f.call->startPending());
     CHECK(f.stream.isWriteInProgress());
@@ -215,7 +216,7 @@ TEST_CASE("writesDone() flushes the queued requests before half-closing", "[life
     CHECK(f.stream.sendRequest(makeEcho(2)) == SendResult::Queued);
 
     CHECK(f.stream.writesDone());
-    CHECK(f.stream.stateName() == "HalfClosing");
+    CHECK(f.stream.state() == StreamState::HalfClosing);
     CHECK_FALSE(f.stream.canWrite());
     CHECK(f.stream.isOpen());
     CHECK_FALSE(f.stream.writesDone());
@@ -228,7 +229,7 @@ TEST_CASE("writesDone() flushes the queued requests before half-closing", "[life
     CHECK(f.writtenIds() == std::vector<std::uint64_t>{1, 2});
 
     f.call->completeWritesDone();
-    REQUIRE(f.pump([&] { return f.stream.stateName() == "HalfClosed"; }));
+    REQUIRE(f.pump([&] { return f.stream.state() == StreamState::HalfClosed; }));
     // Still reading after the half-close
     f.call->deliver(makeResponse(42));
     REQUIRE(f.pump([&] { return f.responses.size() == 1; }));
@@ -243,7 +244,7 @@ TEST_CASE("writesDone() flushes the queued requests before half-closing", "[life
 
     CHECK(f.stream.status().ok());
     CHECK_FALSE(f.stream.isOpen());
-    CHECK(f.stream.stateName() == "Closed");
+    CHECK(f.stream.state() == StreamState::Closed);
     CHECK(f.call->finishCalls() == 1);
     f.checkNoViolations();
 }
@@ -269,7 +270,7 @@ TEST_CASE("Server end of stream: Finish waits for the outstanding write", "[life
     REQUIRE(f.pump([&] { return !f.stream.canWrite(); }));
 
     // Queued requests are discarded, Finish is deferred until the write completes
-    CHECK(f.stream.stateName() == "Finishing");
+    CHECK(f.stream.state() == StreamState::Finishing);
     CHECK(f.stream.isOpen());
     CHECK_FALSE(f.call->finishPending());
     CHECK(f.stream.writeQueueStats().queued_messages == 0);
