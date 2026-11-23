@@ -28,6 +28,7 @@ set(GRPC_ASYNC_STREAM_GRPC_PROVIDER "auto" CACHE STRING "Where to take gRPC from
 set_property(CACHE GRPC_ASYNC_STREAM_GRPC_PROVIDER PROPERTY STRINGS auto package fetch)
 set(GRPC_ASYNC_STREAM_GRPC_VERSION   "1.71.0" CACHE STRING "gRPC version built from source when it is fetched")
 set(GRPC_ASYNC_STREAM_CATCH2_VERSION "3.8.1"  CACHE STRING "Catch2 version used for tests and benchmarks")
+set(GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION "0.9.8" CACHE STRING "magic_enum version fetched when no installed package is found")
 
 if(GRPC_ASYNC_STREAM_IS_TOP_LEVEL)
     # The whole build, gRPC and Abseil included, uses one C++ standard: Abseil's
@@ -63,7 +64,7 @@ add_library(GrpcAsyncStream::GrpcAsyncStream ALIAS GrpcAsyncStream)
 target_include_directories(GrpcAsyncStream INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-target_link_libraries(GrpcAsyncStream INTERFACE gRPC::grpc++)
+target_link_libraries(GrpcAsyncStream INTERFACE gRPC::grpc++ magic_enum::magic_enum)
 target_compile_features(GrpcAsyncStream INTERFACE cxx_std_20)
 
 # Shows the header in IDE project trees

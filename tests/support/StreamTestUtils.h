@@ -11,6 +11,7 @@
 #include <iterator>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace TestSupport
@@ -76,14 +77,38 @@ bool idsStrictlyIncrease(const Messages& messages)
 } // namespace TestSupport
 
 // Readable names of the library's enumerations in Catch2 failure messages
-template<>
-struct Catch::StringMaker<grpc_utils::SendResult>
+namespace TestSupport::detail
 {
-    static std::string convert(grpc_utils::SendResult value) { return std::string(grpc_utils::toString(value)); }
+template<grpc_utils::LibraryEnum Enum>
+struct EnumStringMaker
+{
+    static std::string convert(Enum value)
+    {
+        const std::string_view name = grpc_utils::toString(value);
+        return name.empty() ? "<invalid enumerator>" : std::string(name);
+    }
+};
+} // namespace TestSupport::detail
+
+template<>
+struct Catch::StringMaker<grpc_utils::SendResult> : TestSupport::detail::EnumStringMaker<grpc_utils::SendResult>
+{
 };
 
 template<>
 struct Catch::StringMaker<grpc_utils::WriteOverflowPolicy>
+    : TestSupport::detail::EnumStringMaker<grpc_utils::WriteOverflowPolicy>
 {
-    static std::string convert(grpc_utils::WriteOverflowPolicy value) { return std::string(grpc_utils::toString(value)); }
+};
+
+// gRPC status codes by name ("DEADLINE_EXCEEDED (4)") instead of bare numbers
+template<>
+struct Catch::StringMaker<grpc::StatusCode>
+{
+    static std::string convert(grpc::StatusCode code)
+    {
+        const std::string_view name = magic_enum::enum_name(code);
+        return (name.empty() ? std::string("StatusCode") : std::string(name)) + " (" +
+               std::to_string(magic_enum::enum_integer(code)) + ")";
+    }
 };

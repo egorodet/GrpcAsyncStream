@@ -8,6 +8,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
+#include <catch2/generators/catch_generators_range.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -20,6 +21,7 @@ namespace
 {
 
 using namespace TestSupport;
+using namespace Catch::Generators;
 using grpc_utils::SendResult;
 using grpc_utils::WriteOverflowPolicy;
 using grpc_utils::WriteQueueLimits;
@@ -266,7 +268,7 @@ TEST_CASE("A stream object can run many calls sequentially", "[integration]")
 
 TEST_CASE("A slow server makes the bounded queue drop excess requests", "[integration][load]")
 {
-    const auto policy = GENERATE(WriteOverflowPolicy::DropNewest, WriteOverflowPolicy::DropOldest);
+    const auto policy = GENERATE(from_range(grpc_utils::enumValues<WriteOverflowPolicy>));
 
     ServerFixture f;
     f.server.service().setReadDelay(std::chrono::microseconds(100));

@@ -55,7 +55,10 @@ if (!stream.status().ok()) { /* inspect error */ }
   any protobuf request/response pair and any bidirectional-streaming RPC.
 - **Modern C++20**: concepts constrain the message types, the stream factory and the response handler
   (clear compile errors instead of template noise), limits are configured with designated
-  initializers, and `toString()` / defaulted `operator==` make results and settings easy to log and compare.
+  initializers, and defaulted `operator==` makes settings and statistics easy to compare.
+- **Enum reflection with [magic_enum](https://github.com/Neargye/magic_enum)**: names and parsing of
+  results and policies (`toString` / `fromString`), enumerator counts and lists for histograms and
+  iteration (`enumCount`, `enumValues`, `enumIndex`), and the call state by name (`stateName()`).
 - **Cross-platform**: Linux (GCC, Clang), macOS (Apple Clang) and Windows (MSVC), built and tested in CI.
 - **Non-blocking**: `sendRequest()` and `poll()` never block; `pollFor()` optionally waits for the
   first event so a dedicated stream thread does not have to spin.
@@ -277,6 +280,7 @@ All types live in namespace `grpc_utils`.
 | `bool isOpen() const` | A call is active (any state but closed). |
 | `bool canWrite() const` | New requests are accepted (open and not half-closed/ending). |
 | `bool isWriteInProgress() const` | A start-call, write or half-close is outstanding. |
+| `std::string_view stateName() const` | Current call state by name: `Closed`, `Open`, `HalfClosing`, `HalfClosed` or `Finishing` (see the state machine), for diagnostics and logging. |
 | `const grpc::Status& status() const` | Final status of the last call; `OK` while active. |
 | `const WriteQueueLimits& writeQueueLimits() const` / `void setWriteQueueLimits(const WriteQueueLimits&)` | Queue limits; see above. |
 | `const WriteQueueStats& writeQueueStats() const` | Queue statistics; see above. |
@@ -297,10 +301,34 @@ The class and its member templates are constrained, so a wrong argument is repor
 | Helper | Description |
 |---|---|
 | `constexpr bool isAccepted(SendResult)` | True for `Written`, `Queued`, `QueuedDroppedOldest`. |
-| `constexpr std::string_view toString(SendResult)`, `toString(WriteOverflowPolicy)` | Names for logging. |
+| `constexpr std::string_view toString(E)` | Enumerator name, e.g. `"QueuedDroppedOldest"`; empty for a value that is not an enumerator. |
+| `constexpr std::optional<E> fromString<E>(std::string_view)` | Enumerator by (case-sensitive) name, e.g. a policy read from a configuration file; `std::nullopt` if unknown. |
+| `constexpr std::size_t enumCount<E>` | Number of enumerators, e.g. to size `std::array<std::uint64_t, enumCount<SendResult>>`. |
+| `constexpr auto enumValues<E>` | All enumerators in declaration order, e.g. to iterate over every policy. |
+| `constexpr std::size_t enumIndex(E)` | Position of an enumerator in `enumValues<E>`, e.g. to index a histogram. |
 | `WriteQueueStats::isConsistent()` | Checks the accounting invariant below. |
 | `operator==` on `WriteQueueLimits`, `WriteQueueStats` | Defaulted member-wise comparison. |
 | `static constexpr WriteQueueLimits::unbounded()` | No limits (the behaviour before the bounded queue). |
+
+`E` is one of the library's enumerations, `SendResult` or `WriteOverflowPolicy` (the `LibraryEnum`
+concept). The reflection helpers are thin wrappers over [magic_enum](https://github.com/Neargye/magic_enum),
+so they stay correct when enumerators are added: no hand-written name tables to keep in sync.
+The header also checks at compile time that every enumerator lies within magic_enum's reflection
+range, and in debug builds that every completion-queue tag is a known operation.
+
+```cpp
+// Parse the overflow policy from configuration, falling back to the default
+const auto policy = grpc_utils::fromString<grpc_utils::WriteOverflowPolicy>(config["overflow_policy"])
+                        .value_or(grpc_utils::WriteOverflowPolicy::DropOldest);
+
+// Count sendRequest() outcomes per result and report them by name
+std::array<std::uint64_t, grpc_utils::enumCount<grpc_utils::SendResult>> outcomes{};
+++outcomes[grpc_utils::enumIndex(stream.sendRequest(request))];
+for (const auto result : grpc_utils::enumValues<grpc_utils::SendResult>)
+    log("{}: {}", grpc_utils::toString(result), outcomes[grpc_utils::enumIndex(result)]);
+
+log("stream state: {}", stream.stateName());
+```
 
 ### `SendResult`
 
@@ -360,8 +388,10 @@ log("send result: {}", grpc_utils::toString(stream.sendRequest(request)));
   The library header alone needs less (GCC 11, Clang 13, MSVC 19.29); the newer versions are for
   the ranges used by the tests and benchmarks.
 - gRPC — either installed (found with `find_package(gRPC CONFIG)`), or built from source automatically.
+- [magic_enum](https://github.com/Neargye/magic_enum) ≥ 0.9 (header-only) — an installed package is used
+  when found, otherwise v0.9.8 is fetched automatically.
 - Network access on the first configure: [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) is
-  downloaded and fetches Catch2 (and gRPC when it is built from source).
+  downloaded and fetches magic_enum and Catch2 (and gRPC when it is built from source).
 
 ### Quick start
 
@@ -392,6 +422,7 @@ bundled BoringSSL and zlib are built.
 | `GRPC_ASYNC_STREAM_GRPC_PROVIDER` | `auto` | `auto`: installed gRPC if found, else fetch; `package`: require installed gRPC; `fetch`: always build from source |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
 | `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version |
+| `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version fetched when no installed package is found |
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
 | `GRPC_ASYNC_STREAM_ENABLE_WARNINGS` | `ON` (top level) | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror` (or `/W4 /WX`) for project code |
@@ -491,7 +522,7 @@ selected by tag:
 | `[latency]` | Ping-pong round-trip (send one request, wait for its echo) with 64 B and 16 KiB payloads |
 | `[throughput]` | 1000 pipelined echoes with 64 B, 1 KiB and 16 KiB payloads |
 | `[queue]` | Cost of `sendRequest()` when enqueueing, rejecting (`DropNewest`, full) and evicting (`DropOldest`, full) |
-| `[load]` | Heavy load against a slow server, comparing unbounded and bounded queues: peak C++ heap growth, peak RSS growth, peak queue size/bytes, written/dropped/received counts, mean send cost, produce and drain time, and p50/p99 send→echo latency |
+| `[load]` | Heavy load against a slow server, comparing unbounded and bounded queues: peak C++ heap growth, peak RSS growth, peak queue size/bytes, written/dropped/received counts, mean send cost, produce and drain time, p50/p99 send→echo latency, and a histogram of `sendRequest()` results per `SendResult` |
 
 Memory is measured with `benchmarks/MemoryTracker.cpp`, which (where supported, see
 [Platform support](#platform-support-and-memory-checks)) replaces global `operator new/delete`
@@ -574,7 +605,11 @@ find_package(GrpcAsyncStream CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 ```
 
-**Or simply copy** `include/AsyncReadWriteStream.h` into your sources and link against `gRPC::grpc++`.
+**Or simply copy** `include/AsyncReadWriteStream.h` into your sources and link against `gRPC::grpc++`
+and `magic_enum::magic_enum` (or put magic_enum's `include` directory on the include path).
+
+When the project is installed, a fetched magic_enum is installed alongside it, and the package
+config finds both `gRPC` and `magic_enum` for consumers.
 
 ---
 
@@ -587,7 +622,7 @@ GrpcAsyncStream/
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
 │   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
-│   ├── Dependencies.cmake            # gRPC (package or source) and Catch2 via CPM
+│   ├── Dependencies.cmake            # magic_enum, gRPC (package or source) and Catch2 via CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in
 ├── include/
@@ -619,6 +654,6 @@ backpressure and memory limits under load are left to the application.
 | [async_grpc](https://github.com/cschuet/async_grpc) | Small framework for asynchronous, multi-threaded gRPC **servers** supporting all streaming combinations. | Server side only, so it complements this client-side utility rather than replacing it. |
 | [grpc_cb](https://github.com/jinq0123/grpc_cb) | C++ gRPC library with a callback-style interface built on its own core. | Replaces grpc++ rather than wrapping it; appears to be unmaintained. |
 
-Choose GrpcAsyncStream when you need a dependency-free (beyond gRPC), single-threaded, poll-driven
+Choose GrpcAsyncStream when you need a lightweight (gRPC plus the header-only magic_enum), single-threaded, poll-driven
 client bidirectional stream with bounded memory under load. Choose asio-grpc or the callback API
 when you need servers, other RPC types, or integration with an existing executor or coroutine runtime.

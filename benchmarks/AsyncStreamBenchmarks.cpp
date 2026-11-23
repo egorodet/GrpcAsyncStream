@@ -23,10 +23,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <iterator>
+#include <numeric>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -114,6 +116,11 @@ struct LoadResult
     double        latency_p99_ms     = 0;
     double        latency_max_ms     = 0;
     bool          status_ok          = false;
+
+    // How many sendRequest() calls returned each SendResult, indexed by grpc_utils::enumIndex()
+    std::array<std::uint64_t, grpc_utils::enumCount<SendResult>> send_results{};
+
+    [[nodiscard]] std::uint64_t sendResults(SendResult value) const { return send_results[grpc_utils::enumIndex(value)]; }
 };
 
 LoadResult runHeavyLoad(const LoadConfig& config)
@@ -122,6 +129,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     s.server.service().setReadDelay(config.server_read_delay);
 
     // Preallocate everything the measurement itself needs, before the baseline
+    std::array<std::uint64_t, grpc_utils::enumCount<SendResult>> send_results{};
     std::vector<Clock::time_point> send_times(config.messages);
     std::vector<double>            latencies_ms;
     latencies_ms.reserve(config.messages);
@@ -151,7 +159,9 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     {
         send_times[id] = Clock::now();
         const SendResult result = s.stream.sendRequest(makeEcho(id, payload));
-        REQUIRE(result != SendResult::NotWritable);
+        ++send_results[grpc_utils::enumIndex(result)];
+        if (result == SendResult::NotWritable) [[unlikely]]
+            FAIL("the stream stopped accepting requests: " << s.stream.status().error_message());
 
         // A producer typically services the stream periodically
         if (id % 64 == 0)
@@ -182,6 +192,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
         .produce_ms        = produce_ms,
         .drain_ms          = std::chrono::duration<double, std::milli>(drain_end - produce_end).count(),
         .status_ok         = s.stream.status().ok(),
+        .send_results      = send_results,
     };
     if (heap_baseline && heap_after)
         result.heap_peak_growth = heap_after->peak_bytes - heap_baseline->live_bytes;
@@ -219,6 +230,19 @@ void printLoadResults(const LoadConfig& sample, const std::vector<LoadResult>& r
                     r.peak_queued, toMiB(static_cast<std::int64_t>(r.peak_queued_bytes)),
                     formatMiB(r.heap_peak_growth).c_str(), formatMiB(r.rss_peak_growth).c_str(),
                     r.send_ns_per_msg, r.produce_ms, r.drain_ms, r.latency_p50_ms, r.latency_p99_ms);
+    }
+
+    // sendRequest() outcomes, one column per SendResult enumerator (names from magic_enum)
+    std::printf("\nsendRequest() results\n%-34s", "write queue");
+    for (const SendResult value : grpc_utils::enumValues<SendResult>)
+        std::printf(" %20s", std::string(grpc_utils::toString(value)).c_str());
+    std::printf("\n");
+    for (const LoadResult& r : results)
+    {
+        std::printf("%-34s", r.name.c_str());
+        for (const std::uint64_t count : r.send_results)
+            std::printf(" %20llu", static_cast<unsigned long long>(count));
+        std::printf("\n");
     }
     std::printf("\n");
     std::fflush(stdout);
@@ -362,11 +386,29 @@ TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queue
     CHECK(unbounded.dropped == 0);
     CHECK(unbounded.written == unbounded.submitted);
 
+    CHECK(unbounded.sendResults(SendResult::Dropped) == 0);
+    CHECK(unbounded.sendResults(SendResult::QueuedDroppedOldest) == 0);
+
+    for (std::size_t i = 0; i < results.size(); ++i)
+    {
+        // Every request got exactly one result, and none was refused as not writable
+        const LoadResult& r = results[i];
+        INFO(r.name);
+        CHECK(std::accumulate(r.send_results.begin(), r.send_results.end(), std::uint64_t{0}) == r.submitted);
+        CHECK(r.sendResults(SendResult::NotWritable) == 0);
+    }
+
     for (std::size_t i = 0; i + 1 < results.size(); ++i)
     {
         const LoadResult&       r      = results[i];
         const WriteQueueLimits& limits = configs[i].limits;
-        INFO(r.name);
+        INFO(r.name << " (" << grpc_utils::toString(limits.overflow_policy) << ")");
+
+        // Each policy produces only its own kind of drop
+        if (limits.overflow_policy == WriteOverflowPolicy::DropNewest)
+            CHECK(r.sendResults(SendResult::QueuedDroppedOldest) == 0);
+        else
+            CHECK(r.sendResults(SendResult::Dropped) == 0);
         CHECK(r.status_ok);
         CHECK(r.peak_queued <= limits.max_messages);
         CHECK(r.peak_queued_bytes <= limits.max_bytes);
