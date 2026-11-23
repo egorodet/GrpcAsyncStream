@@ -199,7 +199,7 @@ public:
     // stream with the Async* stub flavour, which calls StartCall internally:
     //
     //   stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
-    //       return stub->AsyncOpenRadarStream(ctx, cq, tag);
+    //       return stub->AsyncOpenChatStream(ctx, cq, tag);
     //   });
     template<StreamFactoryFor<RequestProto, ResponseProto> StreamFactory>
     bool open(StreamFactory&& stream_factory)

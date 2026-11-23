@@ -13,21 +13,24 @@ configurable overflow policy, so memory use stays bounded however heavy the load
 ```cpp
 #include <grpc_utils/AsyncReadWriteStream.h>
 
-grpc_utils::AsyncReadWriteStream<RadarRequest, RadarResponse> stream;
+grpc_utils::AsyncReadWriteStream<ChatRequest, ChatResponse> stream;
 
 stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     ctx->AddMetadata("authorization", token);
-    return stub->AsyncOpenRadarStream(ctx, cq, tag);
+    return stub->AsyncOpenChatStream(ctx, cq, tag);
 });
 
-stream.sendRequest(request);                       // never blocks
-while (stream.poll([&](RadarResponse&& response) { // never blocks
+stream.sendRequest(request); // never blocks
+
+while (stream.poll([&](ChatResponse&& response) { // never blocks
     handle(std::move(response));
 }))
 {
     doOtherWork();
 }
-if (!stream.status().ok()) { /* inspect error */ }
+if (!stream.status().ok()) {
+    /* inspect error */
+}
 ```
 
 ---
