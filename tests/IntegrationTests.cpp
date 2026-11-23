@@ -1,10 +1,12 @@
 // End-to-end tests of AsyncReadWriteStream against a real gRPC server running
 // in-process (see support/TestServer.h).
 
-#include "support/StreamTestUtils.h"
 #include "support/TestServer.h"
 
-#include <AsyncReadWriteStream.h>
+#include <grpc_test_utils/Catch2StringMakers.h>
+#include <grpc_test_utils/EnumReflection.h>
+#include <grpc_test_utils/StreamTestUtils.h>
+#include <grpc_utils/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -21,6 +23,7 @@ namespace
 {
 
 using namespace TestSupport;
+using namespace grpc_test_utils;
 using namespace Catch::Generators;
 using grpc_utils::SendResult;
 using grpc_utils::WriteOverflowPolicy;

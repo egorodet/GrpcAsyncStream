@@ -11,7 +11,7 @@ queue**: once its message or byte limit is reached, excess requests are discarde
 configurable overflow policy, so memory use stays bounded however heavy the load is.
 
 ```cpp
-#include <AsyncReadWriteStream.h>
+#include <grpc_utils/AsyncReadWriteStream.h>
 
 grpc_utils::AsyncReadWriteStream<RadarRequest, RadarResponse> stream;
 
@@ -43,6 +43,7 @@ if (!stream.status().ok()) { /* inspect error */ }
 - [Platform support and memory checks](#platform-support-and-memory-checks)
 - [Tests](#tests)
 - [Benchmarks](#benchmarks)
+- [Test utilities for your own tests](#test-utilities-for-your-own-tests)
 - [Using the library in your project](#using-the-library-in-your-project)
 - [Project layout](#project-layout)
 - [Similar projects](#similar-projects)
@@ -51,14 +52,17 @@ if (!stream.status().ok()) { /* inspect error */ }
 
 ## Features
 
-- **Header-only**, one file: [`include/AsyncReadWriteStream.h`](include/AsyncReadWriteStream.h); works with
-  any protobuf request/response pair and any bidirectional-streaming RPC.
+- **Header-only**, one file: [`include/grpc_utils/AsyncReadWriteStream.h`](include/grpc_utils/AsyncReadWriteStream.h);
+  works with any protobuf request/response pair and any bidirectional-streaming RPC.
+- **Reusable test utilities** ([`include/grpc_test_utils`](include/grpc_test_utils), CMake target
+  `GrpcAsyncStream::TestUtils`): a deterministic fake of the gRPC stream, an in-process gRPC server,
+  polling helpers and readable test output, for the tests of products built on the library.
 - **Modern C++20**: concepts constrain the message types, the stream factory and the response handler
   (clear compile errors instead of template noise), limits are configured with designated
   initializers, and defaulted `operator==` makes settings and statistics easy to compare.
 - **No dependencies beyond gRPC**: the header uses only gRPC and the standard library. Its
   enumerations (`SendResult`, `WriteOverflowPolicy`, `StreamState`) are plain `enum class`es, so any
-  enum-reflection library can name them; the tests and benchmarks use
+  enum-reflection library can name them; the test utilities use
   [magic_enum](https://github.com/Neargye/magic_enum) for that.
 - **Cross-platform**: Linux (GCC, Clang), macOS (Apple Clang) and Windows (MSVC), built and tested in CI.
 - **Non-blocking**: `sendRequest()` and `poll()` never block; `pollFor()` optionally waits for the
@@ -308,7 +312,7 @@ The class and its member templates are constrained, so a wrong argument is repor
 
 The library deliberately has no enum-to-string functions, to keep the header free of dependencies.
 To log or parse its enumerations, use an enum-reflection library such as
-[magic_enum](https://github.com/Neargye/magic_enum) (as the tests and benchmarks do), or a `switch`
+[magic_enum](https://github.com/Neargye/magic_enum) (as the test utilities do), or a `switch`
 of your own:
 
 ```cpp
@@ -339,6 +343,8 @@ std::array<std::uint64_t, magic_enum::enum_count<grpc_utils::SendResult>()> outc
 
 `constexpr bool isAccepted(SendResult)` returns true for the first three.
 
+> **Header location (2.0):** include `<grpc_utils/AsyncReadWriteStream.h>` instead of `<AsyncReadWriteStream.h>`.
+>
 > **Migrating to 2.0:** the header now requires C++20 (it uses concepts, `using enum` and designated
 > initializers); build with `-std=c++20` / `/std:c++20` or later, and the root namespace was renamed from
 > `Network` to `grpc_utils` (replace `Network::` with `grpc_utils::`). The API is otherwise unchanged from 1.1.
@@ -384,9 +390,10 @@ stream.setWriteQueueLimits({.overflow_policy = grpc_utils::WriteOverflowPolicy::
   The library header alone needs less (GCC 11, Clang 13, MSVC 19.29); the newer versions are for
   the ranges used by the tests and benchmarks.
 - gRPC — either installed (found with `find_package(gRPC CONFIG)`), or built from source automatically.
-- Tests and benchmarks only: [Catch2](https://github.com/catchorg/Catch2) and
-  [magic_enum](https://github.com/Neargye/magic_enum) (an installed magic_enum is used when found),
-  both fetched automatically. The library header itself needs nothing but gRPC.
+- Test utilities only: [magic_enum](https://github.com/Neargye/magic_enum) (an installed magic_enum is
+  used when found, otherwise fetched). This project's tests and benchmarks also use
+  [Catch2](https://github.com/catchorg/Catch2), fetched automatically. The library header itself needs
+  nothing but gRPC.
 - Network access on the first configure: [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) is
   downloaded and fetches magic_enum and Catch2 (and gRPC when it is built from source).
 
@@ -419,7 +426,8 @@ bundled BoringSSL and zlib are built.
 | `GRPC_ASYNC_STREAM_GRPC_PROVIDER` | `auto` | `auto`: installed gRPC if found, else fetch; `package`: require installed gRPC; `fetch`: always build from source |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
 | `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version |
-| `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version used by the tests and benchmarks (fetched when no installed package is found) |
+| `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` | `ON` (top level) | Provide the `GrpcAsyncStream::TestUtils` target; switched on automatically when this project's tests or benchmarks are built |
+| `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version used by the test utilities (fetched when no installed package is found) |
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
 | `GRPC_ASYNC_STREAM_ENABLE_WARNINGS` | `ON` (top level) | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror` (or `/W4 /WX`) for project code |
@@ -486,13 +494,19 @@ Clang (arm64) with and without ASan/UBSan, and Windows MSVC with and without ASa
 
 ## Tests
 
-`GrpcAsyncStreamTests` (Catch2, registered with CTest through `catch_discover_tests`) has three suites:
+`GrpcAsyncStreamTests` (Catch2, registered with CTest through `catch_discover_tests`) has four suites,
+built on the [test utilities](#test-utilities-for-your-own-tests):
 
 | Suite | File | Approach |
 |---|---|---|
-| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
+| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` (`grpc_test_utils/FakeReaderWriter.h`) that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
 | `[write-queue]` | `tests/WriteQueueTests.cpp` | Bounded queue: message and byte limits, both overflow policies, oversized requests, zero-capacity queue, run-time limit changes, statistics and the accounting invariant, and a 200 000-request flood proving the queue never exceeds its limits. |
-| `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to an **in-process server** (`tests/support/TestServer.*`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
+| `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to the repository's test service (`tests/support/TestServer.*`) in an **in-process server** (`grpc_test_utils/InProcessServer.h`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
+
+| `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used the way a product's tests would use them, with nothing but `<grpc_utils/…>` and `<grpc_test_utils/…>`: a product message type of its own driven through the fake call, and a generic echo service (no generated code) called through an `InProcessServer`. |
+
+In addition, `GrpcAsyncStreamHeaderChecks` compiles every public header on its own, with the full
+warning flags, so each header stays self-contained.
 
 The test protocol (`tests/proto/test_stream.proto`) lets the client drive the server behaviour per
 request: `ECHO`, `BURST`, `FAIL` (with status code), `END`, plus a per-request delay; the server can also
@@ -579,6 +593,63 @@ What the numbers show:
 
 ---
 
+## Test utilities for your own tests
+
+The utilities this project's tests are built on are published for the tests of products that use the
+library, as the header-only CMake target **`GrpcAsyncStream::TestUtils`** with headers under
+`<grpc_test_utils/…>` (namespace `grpc_test_utils`):
+
+| Header | Contents | Needs |
+|---|---|---|
+| `FakeReaderWriter.h` | `FakeCall<W, R>` and `makeFakeStreamFactory()`: a fake `ClientAsyncReaderWriterInterface` whose start-call, reads, writes, half-close and finish complete only when the test says so, with any outcome. Records the written messages and every misuse of the gRPC async API (`violations()`). | gRPC |
+| `InProcessServer.h` | `InProcessServer`: runs any gRPC services (sync, async, callback, generic) in the test process, reachable through in-process channels: no ports, no conflicts between parallel test runs. `makeStub<Service>()`, extra channels with their own arguments, configure hook, idempotent `shutdown()`. Also `unreachable_server_address` for connection-failure tests. | gRPC |
+| `StreamTestUtils.h` | `pollUntil()` / `pollUntilClosed()` with timeouts; `idsOf()` / `idsStrictlyIncrease()` for message sequences. | gRPC |
+| `EnumReflection.h` | `enumName()`, `enumIndex()` for `SendResult`, `WriteOverflowPolicy` and `StreamState`; `statusCodeName()` for `grpc::StatusCode`. | magic_enum |
+| `Catch2StringMakers.h` | Catch2 shows these enums and `grpc::StatusCode` by name in assertion messages. | Catch2 v3 (link it to your test target) |
+
+The target links `GrpcAsyncStream::GrpcAsyncStream` and magic_enum. Only `Catch2StringMakers.h` uses
+Catch2, so the other headers work with any test framework.
+
+```cmake
+# Subproject / CPM: ask for the test utilities (on by default only when GrpcAsyncStream is the top-level project)
+set(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS ON)
+CPMAddPackage(NAME GrpcAsyncStream GITHUB_REPOSITORY egorodet/GrpcAsyncStream GIT_TAG main)
+
+target_link_libraries(product_tests PRIVATE GrpcAsyncStream::TestUtils Catch2::Catch2WithMain)
+```
+
+```cpp
+#include <grpc_test_utils/Catch2StringMakers.h>
+#include <grpc_test_utils/FakeReaderWriter.h>
+#include <grpc_test_utils/StreamTestUtils.h>
+
+TEST_CASE("Telemetry client keeps the newest samples when the server stalls")
+{
+    auto call = std::make_shared<grpc_test_utils::FakeCall<Sample, Ack>>();
+    TelemetryClient client(grpc_test_utils::makeFakeStreamFactory(call)); // your code under test
+
+    client.publish(makeSamples(5000));     // start-call not completed yet: everything is queued
+    call->completeStart();
+    // ... complete writes one by one with call->completeWrite(), deliver acks with call->deliver(...)
+    REQUIRE(grpc_test_utils::pollUntil(client.stream(), client.handler(), [&] { return call->writePending(); }));
+    CHECK(call->violations().empty());
+}
+```
+
+```cpp
+#include <grpc_test_utils/InProcessServer.h>
+
+TEST_CASE("Client talks to the real service implementation")
+{
+    ProductServiceImpl               service;   // your generated service implementation
+    grpc_test_utils::InProcessServer server(service);
+    auto stub = server.makeStub<product::v1::ProductService>();
+    // ... open an AsyncReadWriteStream over the stub, exchange messages, check the results
+}
+```
+
+See [`tests/TestUtilsUsageTests.cpp`](tests/TestUtilsUsageTests.cpp) for a complete, compiled example.
+
 ## Using the library in your project
 
 **As a subdirectory or with CPM** (gRPC is resolved the same way as described above):
@@ -589,7 +660,8 @@ CPMAddPackage(NAME GrpcAsyncStream GITHUB_REPOSITORY egorodet/GrpcAsyncStream GI
 target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 ```
 
-**Installed package** (requires gRPC installed as a package):
+**Installed package** (requires gRPC installed as a package; installs the test utilities too when
+`GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` is on, together with magic_enum if it was fetched):
 
 ```bash
 cmake -S . -B build -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=package -DGRPC_ASYNC_STREAM_BUILD_TESTS=OFF \
@@ -600,9 +672,10 @@ cmake --install build --prefix /usr/local
 ```cmake
 find_package(GrpcAsyncStream CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
+target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
 ```
 
-**Or simply copy** `include/AsyncReadWriteStream.h` into your sources and link against `gRPC::grpc++`.
+**Or simply copy** `include/grpc_utils/AsyncReadWriteStream.h` into your sources and link against `gRPC::grpc++`.
 
 ---
 
@@ -615,17 +688,25 @@ GrpcAsyncStream/
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
 │   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
-│   ├── Dependencies.cmake            # gRPC (package or source); Catch2 and magic_enum for tests, via CPM
+│   ├── Dependencies.cmake            # gRPC (package or source); magic_enum and Catch2 via CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in
 ├── include/
-│   └── AsyncReadWriteStream.h        # the library
+│   ├── grpc_utils/                   # the library: GrpcAsyncStream::GrpcAsyncStream (gRPC only)
+│   │   └── AsyncReadWriteStream.h
+│   └── grpc_test_utils/              # reusable test utilities: GrpcAsyncStream::TestUtils
+│       ├── FakeReaderWriter.h        #   deterministic fake of the async bidi stream
+│       ├── InProcessServer.h         #   gRPC server reachable through in-process channels
+│       ├── StreamTestUtils.h         #   polling helpers, message-sequence checks
+│       ├── EnumReflection.h          #   enum names / indexes (magic_enum)
+│       └── Catch2StringMakers.h      #   readable Catch2 output
 ├── tests/
-│   ├── proto/test_stream.proto       # test protocol
-│   ├── support/                      # in-process TestServer, FakeReaderWriter, polling helpers
+│   ├── proto/test_stream.proto       # this repository's test protocol
+│   ├── support/TestServer.{h,cpp}    # its TestStream service, served by an InProcessServer
 │   ├── StreamLifecycleTests.cpp
 │   ├── WriteQueueTests.cpp
-│   └── IntegrationTests.cpp
+│   ├── IntegrationTests.cpp
+│   └── TestUtilsUsageTests.cpp       # the test utilities used as a product would use them
 └── benchmarks/
     ├── AsyncStreamBenchmarks.cpp
     └── MemoryTracker.{h,cpp}         # heap / RSS instrumentation

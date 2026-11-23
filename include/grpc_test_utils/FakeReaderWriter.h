@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-namespace TestSupport
+namespace grpc_test_utils
 {
 
 template<typename W, typename R>
@@ -220,4 +220,4 @@ auto makeFakeStreamFactory(std::shared_ptr<FakeCall<W, R>> call)
     };
 }
 
-} // namespace TestSupport
+} // namespace grpc_test_utils

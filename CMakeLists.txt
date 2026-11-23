@@ -23,12 +23,20 @@ option(GRPC_ASYNC_STREAM_ENABLE_WARNINGS  "Compile tests with extra warnings as 
 option(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS "Build tests with the sanitizers supported by the toolchain" OFF)
 option(GRPC_ASYNC_STREAM_HEAP_TRACKING    "Track C++ heap usage in the benchmarks (off automatically with sanitizers)" ON)
 option(GRPC_ASYNC_STREAM_INSTALL          "Generate install and package-config rules"        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
+option(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS "Provide the GrpcAsyncStream::TestUtils target (grpc_test_utils headers) for tests of other projects"
+       ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
+
+# This project's own tests and benchmarks are built on the test utilities
+if((GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS) AND NOT GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
+    message(STATUS "GrpcAsyncStream: enabling GRPC_ASYNC_STREAM_BUILD_TEST_UTILS, required by the tests and benchmarks")
+    set(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS ON)
+endif()
 
 set(GRPC_ASYNC_STREAM_GRPC_PROVIDER "auto" CACHE STRING "Where to take gRPC from: auto, package or fetch")
 set_property(CACHE GRPC_ASYNC_STREAM_GRPC_PROVIDER PROPERTY STRINGS auto package fetch)
 set(GRPC_ASYNC_STREAM_GRPC_VERSION   "1.71.0" CACHE STRING "gRPC version built from source when it is fetched")
 set(GRPC_ASYNC_STREAM_CATCH2_VERSION "3.8.1"  CACHE STRING "Catch2 version used for tests and benchmarks")
-set(GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION "0.9.8" CACHE STRING "magic_enum version used by tests and benchmarks")
+set(GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION "0.9.8" CACHE STRING "magic_enum version used by the test utilities")
 
 if(GRPC_ASYNC_STREAM_IS_TOP_LEVEL)
     # The whole build, gRPC and Abseil included, uses one C++ standard: Abseil's
@@ -55,7 +63,7 @@ include(GNUInstallDirs)
 include(Dependencies)
 
 # ---------------------------------------------------------------------------
-# Header-only library
+# Header-only library: <grpc_utils/...>, depends on gRPC only
 # ---------------------------------------------------------------------------
 
 add_library(GrpcAsyncStream INTERFACE)
@@ -69,7 +77,47 @@ target_compile_features(GrpcAsyncStream INTERFACE cxx_std_20)
 
 # Shows the header in IDE project trees
 target_sources(GrpcAsyncStream INTERFACE
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/AsyncReadWriteStream.h>)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_utils/AsyncReadWriteStream.h>)
+
+# ---------------------------------------------------------------------------
+# Header-only test utilities: <grpc_test_utils/...>, for tests of code built on
+# the library (this project's and other projects' tests alike)
+#
+#   StreamTestUtils.h     polling helpers and message-sequence checks   (gRPC)
+#   FakeReaderWriter.h    deterministic fake of the async bidi stream   (gRPC)
+#   InProcessServer.h     gRPC server reachable through in-process channels (gRPC)
+#   EnumReflection.h      names / indexes of the library enums          (magic_enum)
+#   Catch2StringMakers.h  readable Catch2 output for the enums and grpc::StatusCode
+#                         (Catch2: link your test target to Catch2 to use this header)
+# ---------------------------------------------------------------------------
+
+set(GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS
+    include/grpc_test_utils/Catch2StringMakers.h
+    include/grpc_test_utils/EnumReflection.h
+    include/grpc_test_utils/FakeReaderWriter.h
+    include/grpc_test_utils/InProcessServer.h
+    include/grpc_test_utils/StreamTestUtils.h)
+
+if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
+    grpc_async_stream_add_magic_enum()
+
+    add_library(GrpcAsyncStreamTestUtils INTERFACE)
+    add_library(GrpcAsyncStream::TestUtils ALIAS GrpcAsyncStreamTestUtils)
+    set_target_properties(GrpcAsyncStreamTestUtils PROPERTIES EXPORT_NAME TestUtils)
+
+    target_include_directories(GrpcAsyncStreamTestUtils INTERFACE
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+    target_link_libraries(GrpcAsyncStreamTestUtils INTERFACE
+        GrpcAsyncStream::GrpcAsyncStream
+        magic_enum::magic_enum)
+    target_compile_features(GrpcAsyncStreamTestUtils INTERFACE cxx_std_20)
+
+    # Shows the headers in IDE project trees (one generator expression per header)
+    foreach(header IN LISTS GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS)
+        target_sources(GrpcAsyncStreamTestUtils INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/${header}>)
+    endforeach()
+endif()
 
 # ---------------------------------------------------------------------------
 # Tests and benchmarks
@@ -79,7 +127,6 @@ if(GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS)
     include(GrpcProtoGen)
     include(CompilerOptions)
     grpc_async_stream_add_catch2()
-    grpc_async_stream_add_magic_enum()
     include(CTest)
     include(Catch)
 
@@ -87,17 +134,14 @@ if(GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS)
     grpc_async_stream_add_proto_library(GrpcAsyncStreamTestProto
         PROTOS ${PROJECT_SOURCE_DIR}/tests/proto/test_stream.proto)
 
-    # Common test support: in-process test server and fake stream
+    # This repository's own test service (tests/proto) on top of the test utilities
     add_library(GrpcAsyncStreamTestSupport STATIC
         tests/support/TestServer.cpp
-        tests/support/TestServer.h
-        tests/support/FakeReaderWriter.h
-        tests/support/StreamTestUtils.h)
+        tests/support/TestServer.h)
     target_include_directories(GrpcAsyncStreamTestSupport PUBLIC ${PROJECT_SOURCE_DIR}/tests)
     target_link_libraries(GrpcAsyncStreamTestSupport PUBLIC
-        GrpcAsyncStream::GrpcAsyncStream
-        GrpcAsyncStreamTestProto
-        magic_enum::magic_enum)
+        GrpcAsyncStream::TestUtils
+        GrpcAsyncStreamTestProto)
 
     grpc_async_stream_configure_test_target(GrpcAsyncStreamTestSupport)
 endif()
@@ -119,7 +163,11 @@ if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
     include(CMakePackageConfigHelpers)
 
     install(TARGETS GrpcAsyncStream EXPORT GrpcAsyncStreamTargets)
-    install(FILES include/AsyncReadWriteStream.h DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(DIRECTORY include/grpc_utils DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
+        install(TARGETS GrpcAsyncStreamTestUtils EXPORT GrpcAsyncStreamTargets)
+        install(DIRECTORY include/grpc_test_utils DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    endif()
     install(EXPORT GrpcAsyncStreamTargets
         NAMESPACE GrpcAsyncStream::
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/GrpcAsyncStream)

@@ -1,11 +1,13 @@
 // Deterministic tests of the AsyncReadWriteStream state machine driven through
-// a fake ClientAsyncReaderWriterInterface (see support/FakeReaderWriter.h).
+// a fake ClientAsyncReaderWriterInterface (see grpc_test_utils/FakeReaderWriter.h).
 
-#include "support/FakeReaderWriter.h"
-#include "support/StreamTestUtils.h"
 #include "support/TestServer.h"
 
-#include <AsyncReadWriteStream.h>
+#include <grpc_test_utils/Catch2StringMakers.h>
+#include <grpc_test_utils/EnumReflection.h>
+#include <grpc_test_utils/FakeReaderWriter.h>
+#include <grpc_test_utils/StreamTestUtils.h>
+#include <grpc_utils/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -18,6 +20,7 @@ namespace
 {
 
 using namespace TestSupport;
+using namespace grpc_test_utils;
 using grpc_utils::SendResult;
 using grpc_utils::StreamState;
 

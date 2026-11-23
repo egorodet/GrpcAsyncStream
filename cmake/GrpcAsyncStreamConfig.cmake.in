@@ -3,6 +3,12 @@
 include(CMakeFindDependencyMacro)
 find_dependency(gRPC CONFIG)
 
+# GrpcAsyncStream::TestUtils (installed when GRPC_ASYNC_STREAM_BUILD_TEST_UTILS was ON)
+set(GRPC_ASYNC_STREAM_HAS_TEST_UTILS @GRPC_ASYNC_STREAM_BUILD_TEST_UTILS@)
+if(GRPC_ASYNC_STREAM_HAS_TEST_UTILS)
+    find_dependency(magic_enum CONFIG)
+endif()
+
 include("${CMAKE_CURRENT_LIST_DIR}/GrpcAsyncStreamTargets.cmake")
 
 check_required_components(GrpcAsyncStream)

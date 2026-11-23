@@ -1,10 +1,12 @@
 #pragma once
 
-// In-process gRPC server implementing the TestStream service used by the
-// integration tests and the benchmarks. Clients connect through an in-process
-// channel, so no network ports are involved.
+// The TestStream service of this repository's own tests and benchmarks
+// (tests/proto/test_stream.proto), served by a grpc_test_utils::InProcessServer.
+// Specific to this repository; the reusable parts live in include/grpc_test_utils.
 
 #include "test_stream.grpc.pb.h"
+
+#include <grpc_test_utils/InProcessServer.h>
 
 #include <grpcpp/grpcpp.h>
 
@@ -50,11 +52,11 @@ private:
     std::atomic<std::uint64_t> m_active_calls{0};
 };
 
+// TestStreamService running in an in-process server
 class TestServer
 {
 public:
-    TestServer();
-    ~TestServer();
+    TestServer() = default;
 
     TestServer(const TestServer&)            = delete;
     TestServer& operator=(const TestServer&) = delete;
@@ -62,15 +64,17 @@ public:
     [[nodiscard]] TestStreamService& service() { return m_service; }
 
     // Channel connected to this server in-process
-    [[nodiscard]] std::shared_ptr<grpc::Channel> channel() const { return m_channel; }
+    [[nodiscard]] std::shared_ptr<grpc::Channel> channel() const { return m_server.channel(); }
 
     // Fresh stub over the in-process channel
-    [[nodiscard]] std::unique_ptr<proto::TestStream::Stub> makeStub() const;
+    [[nodiscard]] std::unique_ptr<proto::TestStream::Stub> makeStub() const
+    {
+        return m_server.makeStub<proto::TestStream>();
+    }
 
 private:
-    TestStreamService              m_service;
-    std::unique_ptr<grpc::Server>  m_server;
-    std::shared_ptr<grpc::Channel> m_channel;
+    TestStreamService                m_service; // must outlive the server
+    grpc_test_utils::InProcessServer m_server{m_service};
 };
 
 // Helpers creating requests
@@ -81,12 +85,5 @@ Request makeEnd();
 
 // Metadata key echoed back by the server in TestResponse.metadata_value
 inline constexpr std::string_view metadata_key = "x-test-metadata";
-
-// A server address that refuses connections on every platform
-#if defined(_WIN32)
-inline constexpr std::string_view unreachable_server_address = "ipv4:127.0.0.1:1";
-#else
-inline constexpr std::string_view unreachable_server_address = "unix:/nonexistent/grpc-async-stream.sock";
-#endif
 
 } // namespace TestSupport

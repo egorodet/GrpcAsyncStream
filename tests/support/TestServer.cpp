@@ -133,28 +133,6 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
     return grpc::Status::OK;
 }
 
-TestServer::TestServer()
-{
-    grpc::ServerBuilder builder;
-    builder.RegisterService(&m_service);
-    m_server = builder.BuildAndStart();
-
-    grpc::ChannelArguments args;
-    m_channel = m_server->InProcessChannel(args);
-}
-
-TestServer::~TestServer()
-{
-    // Give active calls a moment to end gracefully, then cancel them
-    m_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
-    m_server->Wait();
-}
-
-std::unique_ptr<proto::TestStream::Stub> TestServer::makeStub() const
-{
-    return proto::TestStream::NewStub(m_channel);
-}
-
 Request makeEcho(std::uint64_t id, std::string payload)
 {
     Request request;

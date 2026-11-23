@@ -6,10 +6,11 @@
 #                                     package - require an installed gRPC
 #                                     fetch   - always build gRPC from source via CPM
 #
-# Catch2 and magic_enum are used by the tests and benchmarks only; the library
-# header does not depend on them. Catch2 is fetched by CPM (which honours an
-# available package when CPM_USE_LOCAL_PACKAGES is ON); magic_enum is taken from
-# an installed package when one is found, otherwise fetched by CPM.
+# Catch2 is used by this project's tests and benchmarks; magic_enum by the test
+# utilities (GrpcAsyncStream::TestUtils). The library header depends on neither.
+# Catch2 is fetched by CPM (which honours an available package when
+# CPM_USE_LOCAL_PACKAGES is ON); magic_enum is taken from an installed package
+# when one is found, otherwise fetched by CPM.
 #
 # After this file the following normalized targets exist:
 #   gRPC::grpc++            - gRPC C++ library
@@ -170,10 +171,19 @@ function(grpc_async_stream_add_catch2)
     set(CMAKE_MODULE_PATH "${CMAKE_MODULE_PATH}" PARENT_SCOPE)
 endfunction()
 
-# magic_enum: enum names, parsing, value counts and lists in tests and benchmarks
+# magic_enum: enum names, parsing, value counts and lists in the test utilities
 function(grpc_async_stream_add_magic_enum)
     if(TARGET magic_enum::magic_enum)
         return()
+    endif()
+    # Installed with this project when the test utilities are installed, so that
+    # the exported GrpcAsyncStream::TestUtils target can find it
+    if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
+        set(_install_magic_enum ON)
+        set(_exclude_magic_enum FALSE)
+    else()
+        set(_install_magic_enum OFF)
+        set(_exclude_magic_enum TRUE)
     endif()
     CPMFindPackage(
         NAME magic_enum
@@ -181,11 +191,11 @@ function(grpc_async_stream_add_magic_enum)
         VERSION ${GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION}
         GIT_SHALLOW TRUE
         SYSTEM TRUE
-        EXCLUDE_FROM_ALL TRUE
+        EXCLUDE_FROM_ALL ${_exclude_magic_enum}
         OPTIONS
             "MAGIC_ENUM_OPT_BUILD_EXAMPLES OFF"
             "MAGIC_ENUM_OPT_BUILD_TESTS OFF"
-            "MAGIC_ENUM_OPT_INSTALL OFF"
+            "MAGIC_ENUM_OPT_INSTALL ${_install_magic_enum}"
     )
     if(NOT TARGET magic_enum::magic_enum)
         message(FATAL_ERROR "GrpcAsyncStream: magic_enum::magic_enum target is not available")
