@@ -113,3 +113,50 @@ jobs:
 
       - name: Heavy-load benchmark (memory bounds)
         run: ctest --test-dir build -L benchmark --output-on-failure
+
+  # Dependencies (gRPC, protobuf, magic_enum, Catch2) from Conan instead of CPM:
+  # verifies that already provided packages are used and nothing is fetched
+  conan:
+    name: Linux GCC (Conan dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        run: |
+          pip install "conan>=2.9,<3"
+          conan profile detect --force
+
+      # Prebuilt C++20 binaries are rarely available, so the first run builds gRPC;
+      # the package cache makes later runs fast
+      - name: Cache Conan packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: conan-${{ runner.os }}-
+
+      - name: Install dependencies
+        run: conan install . --build=missing -s compiler.cppstd=20 -s build_type=Release
+
+      - name: Configure
+        shell: bash # with pipefail: a failing configure is not hidden by tee
+        run: |
+          cmake --preset conan-release | tee configure.log
+          # Every dependency must come from Conan, none from CPM
+          if grep -E "CPM: Adding package|using fetched" configure.log; then
+            echo "::error::A dependency was fetched with CPM instead of using the Conan package"
+            exit 1
+          fi
+
+      - name: Build
+        run: cmake --build --preset conan-release --parallel
+
+      - name: Unit and integration tests
+        run: ctest --preset conan-release -LE benchmark --output-on-failure --timeout 300

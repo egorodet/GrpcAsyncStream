@@ -15,10 +15,17 @@ if(GRPC_ASYNC_STREAM_TEST_ENVIRONMENT)
     list(APPEND _test_properties ENVIRONMENT "${GRPC_ASYNC_STREAM_TEST_ENVIRONMENT}")
 endif()
 
-catch_discover_tests(GrpcAsyncStreamTests
-    TEST_PREFIX "GrpcAsyncStream."
-    PROPERTIES ${_test_properties}
-    DISCOVERY_MODE PRE_TEST)
+if(COMMAND catch_discover_tests)
+    # One CTest test per Catch2 test case
+    catch_discover_tests(GrpcAsyncStreamTests
+        TEST_PREFIX "GrpcAsyncStream."
+        PROPERTIES ${_test_properties}
+        DISCOVERY_MODE PRE_TEST)
+else()
+    # Catch2 without its CMake integration module (Catch.cmake): run the whole suite as one test
+    add_test(NAME GrpcAsyncStream.AllTests COMMAND GrpcAsyncStreamTests)
+    set_tests_properties(GrpcAsyncStream.AllTests PROPERTIES ${_test_properties})
+endif()
 
 # Every public header must compile on its own (self-contained includes): one
 # translation unit per header, built with the project's warning flags.

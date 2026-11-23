@@ -390,13 +390,15 @@ stream.setWriteQueueLimits({.overflow_policy = grpc_utils::WriteOverflowPolicy::
   GCC ≥ 11, Clang ≥ 16, Apple Clang ≥ 15 (Xcode 15), MSVC ≥ 19.30 (Visual Studio 2022).
   The library header alone needs less (GCC 11, Clang 13, MSVC 19.29); the newer versions are for
   the ranges used by the tests and benchmarks.
-- gRPC — either installed (found with `find_package(gRPC CONFIG)`), or built from source automatically.
-- Test utilities only: [magic_enum](https://github.com/Neargye/magic_enum) (an installed magic_enum is
-  used when found, otherwise fetched). This project's tests and benchmarks also use
-  [Catch2](https://github.com/catchorg/Catch2), fetched automatically. The library header itself needs
-  nothing but gRPC.
-- Network access on the first configure: [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake) is
-  downloaded and fetches magic_enum and Catch2 (and gRPC when it is built from source).
+- gRPC. Test utilities only: [magic_enum](https://github.com/Neargye/magic_enum). This project's tests
+  and benchmarks also use [Catch2](https://github.com/catchorg/Catch2). The library header itself needs
+  nothing but gRPC. Each dependency is taken, in this order, from
+  1. targets already imported into the build (e.g. by [Conan](#dependencies-from-conan)'s CMakeDeps, or by a parent project),
+  2. an installed package found with `find_package(<Name> CONFIG)` (Conan, vcpkg, Homebrew, a custom prefix),
+  3. otherwise it is downloaded and built with [CPM.cmake](https://github.com/cpm-cmake/CPM.cmake)
+     (network access on the first configure).
+
+  The configure output says which source each one came from (`using imported|package|fetched ...`).
 
 ### Quick start
 
@@ -420,13 +422,40 @@ Building gRPC from source compiles ~1500 translation units on the first build (t
 laptop); subsequent builds reuse it. System OpenSSL and zlib are used when found, otherwise gRPC's
 bundled BoringSSL and zlib are built.
 
+### Dependencies from Conan
+
+[`conanfile.py`](conanfile.py) declares all dependencies for [Conan 2](https://conan.io): gRPC 1.72.0
+(with protobuf), magic_enum 0.9.8 and Catch2 3.8.1. Conan's `CMakeDeps` generates package configs
+that the dependency lookup above finds, so nothing is fetched with CPM:
+
+```bash
+conan install . --build=missing -s compiler.cppstd=20 -s build_type=Release
+cmake --preset conan-release
+cmake --build --preset conan-release
+ctest --preset conan-release -LE benchmark --output-on-failure
+```
+
+- `-s compiler.cppstd=20` (or `gnu20`) is required and checked by the recipe: Abseil's ABI depends on the
+  C++ standard, so gRPC, protobuf and Abseil must be built with the same standard as this project.
+  Conan Center's prebuilt binaries mostly use C++17, so expect `--build=missing` to build gRPC once;
+  Conan's package cache keeps it for later builds.
+- The generated preset sets `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package`, so a missing package is an error
+  rather than a silent fallback to building gRPC with CPM.
+- Recipe options: `-o "&:with_tests=False"` (no Catch2, no tests or benchmarks), `-o "&:with_test_utils=False"`.
+- `protoc` and `grpc_cpp_plugin` come from the host packages in native builds. When cross-building, the
+  recipe adds them as tool requirements; the lookup then finds them on `PATH` (Conan's build environment).
+
+**In your own Conan-based project**, just require `grpc` (and `magic_enum` for the test utilities) in
+your recipe and add this project as a subdirectory or with CPM: when the targets are already imported or
+the packages are found, they are used as they are.
+
 ### CMake options
 
 | Option | Default | Description |
 |---|---|---|
-| `GRPC_ASYNC_STREAM_GRPC_PROVIDER` | `auto` | `auto`: installed gRPC if found, else fetch; `package`: require installed gRPC; `fetch`: always build from source |
+| `GRPC_ASYNC_STREAM_GRPC_PROVIDER` | `auto` | `auto`: imported targets or installed package (e.g. from Conan) if available, else fetch; `package`: require imported targets or an installed package; `fetch`: build from source, unless gRPC targets are already imported |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
-| `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version |
+| `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version fetched when no imported targets or installed package is found |
 | `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` | `ON` (top level) | Provide the `GrpcAsyncStream::TestUtils` target; switched on automatically when this project's tests or benchmarks are built |
 | `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version used by the test utilities (fetched when no installed package is found) |
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
@@ -440,7 +469,8 @@ When the project is consumed as a subproject, tests, benchmarks, warnings and in
 
 The whole build (gRPC, protobuf and Abseil included) uses one C++ standard, C++20 at minimum:
 Abseil's ABI depends on the standard, so mixing a C++17-built Abseil with C++20 code is unsafe.
-When using an installed gRPC, make sure it was built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
+When using an installed gRPC (including from Conan, with `-s compiler.cppstd=20`), make sure it was
+built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
 
 ### Windows notes
 
@@ -490,6 +520,9 @@ Notes:
 heavy-load benchmark on six configurations: Linux GCC, Linux Clang with ASan/UBSan/LSan, macOS Apple
 Clang (arm64) with and without ASan/UBSan, and Windows MSVC with and without ASan. A compiler cache
 (ccache / sccache) makes runs after the first one fast.
+
+A seventh job, **Linux GCC (Conan dependencies)**, takes every dependency from Conan using
+[`conanfile.py`](conanfile.py) and fails if the configure step fetches anything with CPM.
 
 ---
 
@@ -686,10 +719,11 @@ target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
 GrpcAsyncStream/
 ├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
+├── conanfile.py                      # Conan 2 recipe for the dependencies (optional)
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
 │   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
-│   ├── Dependencies.cmake            # gRPC (package or source); magic_enum and Catch2 via CPM
+│   ├── Dependencies.cmake            # gRPC, magic_enum, Catch2: imported targets, packages (Conan, …) or CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in
 ├── include/

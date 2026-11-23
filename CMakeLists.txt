@@ -128,7 +128,9 @@ if(GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS)
     include(CompilerOptions)
     grpc_async_stream_add_catch2()
     include(CTest)
-    include(Catch)
+    if(GRPC_ASYNC_STREAM_CATCH2_DISCOVERY)
+        include(Catch)
+    endif()
 
     # Test protocol shared by tests and benchmarks
     grpc_async_stream_add_proto_library(GrpcAsyncStreamTestProto
