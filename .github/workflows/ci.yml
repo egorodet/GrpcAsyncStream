@@ -10,67 +10,91 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# External dependencies (gRPC, protobuf, Abseil, magic_enum, Catch2) come from Conan
+# (conanfile.py), not from CPM. Conan Center has no prebuilt C++20 binaries of gRPC
+# and Abseil, so the first run of each dependency set builds them; the Conan package
+# cache then makes every later run skip that build completely.
+#
+# Each job's dependency set is identified by `deps`: jobs with the same set share
+# one cache entry. Everything is built as Release: Conan's CMakeDeps ties the
+# dependencies' libraries to their own build type, so mixing a Debug project with
+# Release dependencies is unreliable. Sanitizer jobs instead override the Release
+# flags of this project's code with `-O1 -g` (no NDEBUG): asserts stay active and
+# stack traces stay readable, while sharing the Release dependencies of the platform.
+
 jobs:
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 180
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         include:
           - name: Linux GCC
             os: ubuntu-latest
-            cc: gcc-13
-            cxx: g++-13
-            build_type: Release
+            deps: linux-gcc
+            cc: gcc
+            cxx: g++
             sanitizers: OFF
           - name: Linux Clang + ASan/UBSan/LSan
             os: ubuntu-latest
+            deps: linux-clang
             cc: clang
             cxx: clang++
-            build_type: Debug
             sanitizers: ON
+            release_flags: -O1 -g
           - name: macOS Apple Clang
             os: macos-latest
-            build_type: Release
+            deps: macos-apple-clang
             sanitizers: OFF
           - name: macOS Apple Clang + ASan/UBSan
             os: macos-latest
-            build_type: Debug
+            deps: macos-apple-clang
             sanitizers: ON
+            release_flags: -O1 -g
           - name: Windows MSVC
             os: windows-latest
-            build_type: Release
+            deps: windows-msvc
             sanitizers: OFF
           - name: Windows MSVC + ASan
             os: windows-latest
-            # Release: sccache cannot cache objects built with /Zi debug information
-            build_type: Release
+            deps: windows-msvc
             sanitizers: ON
 
     env:
-      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
       # Benchmarks in CI only check the bounded-memory assertions; keep them short
       GRPC_ASYNC_STREAM_BENCH_MESSAGES: 10000
+      # CMake 4 rejects dependencies declaring compatibility with CMake < 3.5 (e.g. c-ares)
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+    defaults:
+      run:
+        shell: bash # with pipefail on every platform
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Cache CPM sources
-        uses: actions/cache@v4
+      - uses: actions/setup-python@v5
         with:
-          path: .cpm-cache
-          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
-          restore-keys: cpm-${{ runner.os }}-
+          python-version: "3.12"
 
-      # gRPC is built from source; the compiler cache makes later runs fast
-      - name: Compiler cache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ${{ matrix.name }}
-          max-size: 2G
-          variant: ${{ runner.os == 'Windows' && 'sccache' || 'ccache' }}
+      # Compilers for the Conan profile and the build (Linux only; others use the default)
+      - name: Select compiler
+        if: matrix.cxx
+        run: |
+          echo "CC=${{ matrix.cc }}" >> "$GITHUB_ENV"
+          echo "CXX=${{ matrix.cxx }}" >> "$GITHUB_ENV"
+
+      - name: Install Conan
+        id: conan
+        run: |
+          pip install "conan>=2.9,<3"
+          conan profile detect --force
+          conan profile show
+          # The detected profile (compiler, version, runtime, ...) is part of the cache key,
+          # so a runner image update starts a new cache instead of rebuilding on every run
+          echo "profile-hash=$(conan profile show --format=json | python -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])')" >> "$GITHUB_OUTPUT"
 
       - name: Install Ninja (Linux)
         if: runner.os == 'Linux'
@@ -84,71 +108,41 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            LAUNCHER=sccache
-            COMPILERS="-DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl"
-          else
-            LAUNCHER=ccache
-            COMPILERS=""
-            if [ -n "${{ matrix.cxx }}" ]; then
-              COMPILERS="-DCMAKE_C_COMPILER=${{ matrix.cc }} -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}"
-            fi
-          fi
-          cmake -S . -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_C_COMPILER_LAUNCHER=$LAUNCHER \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=$LAUNCHER \
-            -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch \
-            -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=${{ matrix.sanitizers }} \
-            $COMPILERS
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Unit and integration tests
-        run: ctest --test-dir build -LE benchmark --output-on-failure --timeout 300
-
-      - name: Heavy-load benchmark (memory bounds)
-        run: ctest --test-dir build -L benchmark --output-on-failure
-
-  # Dependencies (gRPC, protobuf, magic_enum, Catch2) from Conan instead of CPM:
-  # verifies that already provided packages are used and nothing is fetched
-  conan:
-    name: Linux GCC (Conan dependencies)
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Conan
-        run: |
-          pip install "conan>=2.9,<3"
-          conan profile detect --force
-
-      # Prebuilt C++20 binaries are rarely available, so the first run builds gRPC;
-      # the package cache makes later runs fast
-      - name: Cache Conan packages
-        uses: actions/cache@v4
+      - name: Restore Conan packages
+        id: conan-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.conan2/p
-          key: conan-${{ runner.os }}-${{ hashFiles('conanfile.py') }}
-          restore-keys: conan-${{ runner.os }}-
+          key: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-
 
-      - name: Install dependencies
-        run: conan install . --build=missing -s compiler.cppstd=20 -s build_type=Release
+      - name: Install dependencies with Conan
+        run: |
+          conan install . --build=missing \
+            -s compiler.cppstd=20 \
+            -s build_type=Release \
+            -c tools.cmake.cmaketoolchain:generator=Ninja
+
+      # Keep only finished packages: build trees and sources would blow the cache quota
+      - name: Save Conan packages
+        if: steps.conan-cache.outputs.cache-hit != 'true'
+        run: conan cache clean "*" --source --build --download --temp
+
+      - uses: actions/cache/save@v4
+        if: steps.conan-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.conan2/p
+          key: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
 
       - name: Configure
-        shell: bash # with pipefail: a failing configure is not hidden by tee
         run: |
-          cmake --preset conan-release | tee configure.log
+          EXTRA_ARGS=()
+          if [ -n "${{ matrix.release_flags }}" ]; then
+            EXTRA_ARGS+=("-DCMAKE_CXX_FLAGS_RELEASE=${{ matrix.release_flags }}")
+          fi
+          cmake --preset conan-release \
+            -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=${{ matrix.sanitizers }} \
+            "${EXTRA_ARGS[@]}" | tee configure.log
           # Every dependency must come from Conan, none from CPM
           if grep -E "CPM: Adding package|using fetched" configure.log; then
             echo "::error::A dependency was fetched with CPM instead of using the Conan package"
@@ -156,7 +150,51 @@ jobs:
           fi
 
       - name: Build
-        run: cmake --build --preset conan-release --parallel
+        run: cmake --build build/Release --parallel
 
       - name: Unit and integration tests
-        run: ctest --preset conan-release -LE benchmark --output-on-failure --timeout 300
+        run: ctest --test-dir build/Release -LE benchmark --output-on-failure --timeout 300
+
+      - name: Heavy-load benchmark (memory bounds)
+        run: ctest --test-dir build/Release -L benchmark --output-on-failure
+
+  # The CPM fallback (no package manager) stays covered by one job; ccache keeps
+  # its gRPC source build fast after the first run.
+  cpm-fallback:
+    name: Linux GCC (CPM fallback)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CPM_SOURCE_CACHE: ${{ github.workspace }}/.cpm-cache
+      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache CPM sources
+        uses: actions/cache@v4
+        with:
+          path: .cpm-cache
+          key: cpm-${{ runner.os }}-${{ hashFiles('cmake/Dependencies.cmake', 'CMakeLists.txt') }}
+          restore-keys: cpm-${{ runner.os }}-
+
+      - name: Compiler cache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: cpm-fallback
+          max-size: 2G
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit and integration tests
+        run: ctest --test-dir build -LE benchmark --output-on-failure --timeout 300

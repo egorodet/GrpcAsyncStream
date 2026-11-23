@@ -516,13 +516,22 @@ Notes:
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds gRPC from source and runs the tests and the
-heavy-load benchmark on six configurations: Linux GCC, Linux Clang with ASan/UBSan/LSan, macOS Apple
-Clang (arm64) with and without ASan/UBSan, and Windows MSVC with and without ASan. A compiler cache
-(ccache / sccache) makes runs after the first one fast.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the tests and the heavy-load benchmark on six
+configurations: Linux GCC, Linux Clang with ASan/UBSan/LSan, macOS Apple Clang (arm64) with and without
+ASan/UBSan, and Windows MSVC with and without ASan.
 
-A seventh job, **Linux GCC (Conan dependencies)**, takes every dependency from Conan using
-[`conanfile.py`](conanfile.py) and fails if the configure step fetches anything with CPM.
+- **Dependencies come from Conan** ([`conanfile.py`](conanfile.py)), not CPM, and the configure step fails
+  if anything is fetched with CPM. Conan Center has no prebuilt C++20 binaries of gRPC and Abseil (Abseil's
+  binaries are tied to the C++ standard they were built with), so the first run builds them once per
+  dependency set: Linux GCC, Linux Clang, macOS and Windows. The Conan package cache, keyed on the
+  detected compiler profile and `conanfile.py`, then lets every later run skip the gRPC build entirely.
+  Only finished packages are cached (build trees and sources are cleaned), to stay within the cache quota.
+- **Everything is built as Release**, because Conan's CMakeDeps ties libraries to the dependencies' own
+  build type. The sanitizer jobs override the Release flags of this project's code with `-O1 -g` (no
+  `NDEBUG`), so asserts stay active and stack traces stay readable, and they share their platform's
+  dependency set.
+- A seventh job, **Linux GCC (CPM fallback)**, keeps the no-package-manager path covered: it builds gRPC
+  from source with CPM, using ccache.
 
 ---
 
