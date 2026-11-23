@@ -13,7 +13,7 @@
 #
 # Only this project's code is instrumented; gRPC and its dependencies are not.
 # Checks that require every linked object to be instrumented are therefore off:
-#   - MSVC: the STL's vector/string ASan annotations are disabled, otherwise the
+#   - MSVC: the STL's vector/string/optional ASan annotations are disabled, otherwise the
 #     linker rejects mixing instrumented and plain objects (LNK2038 annotate_*).
 #   - macOS: libc++ container-overflow detection reports false positives when
 #     plain (gRPC) code modifies containers created by instrumented code.
@@ -46,9 +46,13 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
     if(MSVC)
         # MSVC supports AddressSanitizer only. It is incompatible with the runtime
         # checks (/RTC*) and incremental linking that CMake enables for Debug.
-        set(GRPC_ASYNC_STREAM_SANITIZE_COMPILE_OPTIONS /fsanitize=address)
-        set(GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS /INCREMENTAL:NO)
-        set(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS _DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION)
+        # ASan without debug info raises warning C5072 (an error with /WX) and gives
+        # unreadable reports, so configurations without debug info get /Z7 (embedded
+        # in the objects: no PDB contention in parallel builds) and /DEBUG.
+        set(GRPC_ASYNC_STREAM_SANITIZE_COMPILE_OPTIONS /fsanitize=address $<$<CONFIG:Release,MinSizeRel>:/Z7>)
+        set(GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS /INCREMENTAL:NO /DEBUG)
+        set(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS
+            _DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION _DISABLE_OPTIONAL_ANNOTATION)
         foreach(flags_var CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELWITHDEBINFO)
             # Included at directory scope: this changes the flags of the targets defined after it
             string(REGEX REPLACE "/RTC[1csu]+" "" ${flags_var} "${${flags_var}}")
