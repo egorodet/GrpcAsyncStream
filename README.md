@@ -44,6 +44,7 @@ if (!stream.status().ok()) { /* inspect error */ }
 - [Benchmarks](#benchmarks)
 - [Using the library in your project](#using-the-library-in-your-project)
 - [Project layout](#project-layout)
+- [Similar projects](#similar-projects)
 
 ---
 
@@ -501,3 +502,23 @@ GrpcAsyncStream/
     ├── AsyncStreamBenchmarks.cpp
     └── MemoryTracker.{h,cpp}         # heap / RSS instrumentation
 ```
+
+---
+
+## Similar projects
+
+Other open-source C++ projects that make gRPC's asynchronous streaming API easier to use. None of
+them provides a bounded write queue with overflow policies; with each of them, write serialization,
+backpressure and memory limits under load are left to the application.
+
+| Project | What it is | Main difference from GrpcAsyncStream |
+|---|---|---|
+| [asio-grpc](https://github.com/Tradias/asio-grpc) | Header-only C++17 library that adapts `grpc::CompletionQueue` to an Asio execution context / `std::execution`; supports all RPC types on client and server with C++20 coroutines, Boost.Coroutine, callbacks or senders. | A thin, general layer over the gRPC API that requires Asio (or libunifex/stdexec) and an event loop. It has no write queue or overflow handling. |
+| [userver gRPC (`ugrpc`)](https://userver.tech/) | gRPC driver of the userver microservice framework; wraps grpcpp in coroutine-based clients and services, including `ugrpc::client::ReaderWriter` for bidirectional streams. | Only usable inside the userver coroutine runtime; a full framework rather than a single header. |
+| [gRPC callback API](https://grpc.io/docs/languages/cpp/callback/) | gRPC's official reactor-based async API (`grpc::ClientBidiReactor` and friends), the recommended alternative to the completion-queue API. | Callbacks run on gRPC's own threads instead of the caller's poll loop. Write serialization (one outstanding write) and buffering are still up to the application. |
+| [async_grpc](https://github.com/cschuet/async_grpc) | Small framework for asynchronous, multi-threaded gRPC **servers** supporting all streaming combinations. | Server side only, so it complements this client-side utility rather than replacing it. |
+| [grpc_cb](https://github.com/jinq0123/grpc_cb) | C++ gRPC library with a callback-style interface built on its own core. | Replaces grpc++ rather than wrapping it; appears to be unmaintained. |
+
+Choose GrpcAsyncStream when you need a dependency-free (beyond gRPC), single-threaded, poll-driven
+client bidirectional stream with bounded memory under load. Choose asio-grpc or the callback API
+when you need servers, other RPC types, or integration with an existing executor or coroutine runtime.
