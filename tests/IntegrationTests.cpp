@@ -20,11 +20,11 @@ namespace
 {
 
 using namespace TestSupport;
-using Network::SendResult;
-using Network::WriteOverflowPolicy;
-using Network::WriteQueueLimits;
+using grpc_utils::SendResult;
+using grpc_utils::WriteOverflowPolicy;
+using grpc_utils::WriteQueueLimits;
 
-using Stream = Network::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
 
 struct ServerFixture
 {
@@ -81,7 +81,7 @@ TEST_CASE("Echo round-trip preserves order and payloads", "[integration]")
     {
         // Requests sent right after open() are queued until the start-call completes
         const SendResult result = f.stream.sendRequest(makeEcho(id, "payload-" + std::to_string(id)));
-        REQUIRE(Network::isAccepted(result));
+        REQUIRE(grpc_utils::isAccepted(result));
     }
 
     REQUIRE(f.pump([&] { return f.responses.size() == count; }));
@@ -115,12 +115,12 @@ TEST_CASE("Ping-pong: the handler sends the next request for each response", "[i
         CHECK(response.id() == received);
         ++received;
         if (received < rounds)
-            CHECK(Network::isAccepted(f.stream.sendRequest(makeEcho(received))));
+            CHECK(grpc_utils::isAccepted(f.stream.sendRequest(makeEcho(received))));
         else
             CHECK(f.stream.writesDone());
     };
 
-    REQUIRE(Network::isAccepted(f.stream.sendRequest(makeEcho(0))));
+    REQUIRE(grpc_utils::isAccepted(f.stream.sendRequest(makeEcho(0))));
     REQUIRE(pollUntilClosed(f.stream, ping, std::chrono::seconds(20)));
     CHECK(received == rounds);
     CHECK(f.stream.status().ok());

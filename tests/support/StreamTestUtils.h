@@ -77,13 +77,13 @@ bool idsStrictlyIncrease(const Messages& messages)
 
 // Readable names of the library's enumerations in Catch2 failure messages
 template<>
-struct Catch::StringMaker<Network::SendResult>
+struct Catch::StringMaker<grpc_utils::SendResult>
 {
-    static std::string convert(Network::SendResult value) { return std::string(Network::toString(value)); }
+    static std::string convert(grpc_utils::SendResult value) { return std::string(grpc_utils::toString(value)); }
 };
 
 template<>
-struct Catch::StringMaker<Network::WriteOverflowPolicy>
+struct Catch::StringMaker<grpc_utils::WriteOverflowPolicy>
 {
-    static std::string convert(Network::WriteOverflowPolicy value) { return std::string(Network::toString(value)); }
+    static std::string convert(grpc_utils::WriteOverflowPolicy value) { return std::string(grpc_utils::toString(value)); }
 };

@@ -18,9 +18,9 @@ namespace
 {
 
 using namespace TestSupport;
-using Network::SendResult;
+using grpc_utils::SendResult;
 
-using Stream = Network::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
 using Call   = FakeCall<Request, Response>;
 
 Response makeResponse(std::uint64_t id)
@@ -414,9 +414,9 @@ TEST_CASE("The destructor releases an active call", "[lifecycle]")
 
 TEST_CASE("Concepts accept valid arguments and reject invalid ones", "[lifecycle][concepts]")
 {
-    using Network::ProtobufMessage;
-    using Network::ResponseHandlerFor;
-    using Network::StreamFactoryFor;
+    using grpc_utils::ProtobufMessage;
+    using grpc_utils::ResponseHandlerFor;
+    using grpc_utils::StreamFactoryFor;
 
     // Message types
     static_assert(ProtobufMessage<Request>);

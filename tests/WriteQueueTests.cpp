@@ -19,12 +19,12 @@ namespace
 {
 
 using namespace TestSupport;
-using Network::SendResult;
-using Network::WriteOverflowPolicy;
-using Network::WriteQueueLimits;
-using Network::WriteQueueStats;
+using grpc_utils::SendResult;
+using grpc_utils::WriteOverflowPolicy;
+using grpc_utils::WriteQueueLimits;
+using grpc_utils::WriteQueueStats;
 
-using Stream = Network::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
 using Call   = FakeCall<Request, Response>;
 
 constexpr std::size_t unlimited = WriteQueueLimits::unlimited;
@@ -101,16 +101,16 @@ TEST_CASE("Default write queue limits bound both message count and bytes", "[wri
 
 TEST_CASE("isAccepted() and toString() describe send results", "[write-queue]")
 {
-    static_assert(Network::isAccepted(SendResult::Written));
-    static_assert(Network::toString(SendResult::QueuedDroppedOldest) == "QueuedDroppedOldest");
-    static_assert(Network::toString(WriteOverflowPolicy::DropNewest) == "DropNewest");
+    static_assert(grpc_utils::isAccepted(SendResult::Written));
+    static_assert(grpc_utils::toString(SendResult::QueuedDroppedOldest) == "QueuedDroppedOldest");
+    static_assert(grpc_utils::toString(WriteOverflowPolicy::DropNewest) == "DropNewest");
     CHECK(Catch::Detail::stringify(SendResult::Dropped) == "Dropped");
 
-    CHECK(Network::isAccepted(SendResult::Written));
-    CHECK(Network::isAccepted(SendResult::Queued));
-    CHECK(Network::isAccepted(SendResult::QueuedDroppedOldest));
-    CHECK_FALSE(Network::isAccepted(SendResult::Dropped));
-    CHECK_FALSE(Network::isAccepted(SendResult::NotWritable));
+    CHECK(grpc_utils::isAccepted(SendResult::Written));
+    CHECK(grpc_utils::isAccepted(SendResult::Queued));
+    CHECK(grpc_utils::isAccepted(SendResult::QueuedDroppedOldest));
+    CHECK_FALSE(grpc_utils::isAccepted(SendResult::Dropped));
+    CHECK_FALSE(grpc_utils::isAccepted(SendResult::NotWritable));
 }
 
 TEST_CASE("DropNewest rejects requests once the message limit is reached", "[write-queue]")

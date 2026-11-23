@@ -17,7 +17,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace Network
+namespace grpc_utils
 {
 
 // What happens to a request that does not fit into the bounded write queue.
@@ -677,4 +677,4 @@ private:
     bool  m_finish_in_progress = false;
 };
 
-} // namespace Network
+} // namespace grpc_utils

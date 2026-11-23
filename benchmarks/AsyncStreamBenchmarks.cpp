@@ -36,11 +36,11 @@ namespace
 {
 
 using namespace TestSupport;
-using Network::SendResult;
-using Network::WriteOverflowPolicy;
-using Network::WriteQueueLimits;
+using grpc_utils::SendResult;
+using grpc_utils::WriteOverflowPolicy;
+using grpc_utils::WriteQueueLimits;
 
-using Stream = Network::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
 using Clock  = std::chrono::steady_clock;
 
 std::uint64_t envOr(const char* name, std::uint64_t fallback)
@@ -133,7 +133,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     };
 
     // The warm-up request sent by ServerStream is excluded from the results
-    const Network::WriteQueueStats warm_up = s.stream.writeQueueStats();
+    const grpc_utils::WriteQueueStats warm_up = s.stream.writeQueueStats();
 
     MemoryTracker::releaseFreeMemory();
     const std::optional<MemoryTracker::HeapCounters> heap_baseline = MemoryTracker::heap();

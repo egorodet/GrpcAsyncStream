@@ -13,7 +13,7 @@ configurable overflow policy, so memory use stays bounded however heavy the load
 ```cpp
 #include <AsyncReadWriteStream.h>
 
-Network::AsyncReadWriteStream<RadarRequest, RadarResponse> stream;
+grpc_utils::AsyncReadWriteStream<RadarRequest, RadarResponse> stream;
 
 stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     ctx->AddMetadata("authorization", token);
@@ -261,7 +261,7 @@ Invariant (checked by the tests):
 
 ## API reference
 
-All types live in namespace `Network`.
+All types live in namespace `grpc_utils`.
 
 ### `AsyncReadWriteStream<RequestProto, ResponseProto>`
 
@@ -315,10 +315,11 @@ The class and its member templates are constrained, so a wrong argument is repor
 `constexpr bool isAccepted(SendResult)` returns true for the first three.
 
 > **Migrating to 2.0:** the header now requires C++20 (it uses concepts, `using enum` and designated
-> initializers); build with `-std=c++20` / `/std:c++20` or later. The API is otherwise unchanged from 1.1.
+> initializers); build with `-std=c++20` / `/std:c++20` or later, and the root namespace was renamed from
+> `Network` to `grpc_utils` (replace `Network::` with `grpc_utils::`). The API is otherwise unchanged from 1.1.
 >
 > **Migrating from 1.0:** `sendRequest()` used to return `bool` (`false` = not writable).
-> Replace `if (!stream.sendRequest(r))` with `if (!Network::isAccepted(stream.sendRequest(r)))`,
+> Replace `if (!stream.sendRequest(r))` with `if (!grpc_utils::isAccepted(stream.sendRequest(r)))`,
 > or compare with `SendResult::NotWritable` to keep the exact old meaning. The write queue used to be
 > unbounded; construct the stream with `WriteQueueLimits::unbounded()` for the old behaviour.
 
@@ -335,16 +336,16 @@ while (stream.pollFor(onResponse, std::chrono::milliseconds(100))) {}
 log(stream.status());
 
 // Telemetry: keep at most ~1 s of 100 Hz samples, newest data wins
-Network::AsyncReadWriteStream<Sample, Ack> telemetry({
+grpc_utils::AsyncReadWriteStream<Sample, Ack> telemetry({
     .max_messages    = 100,
     .max_bytes       = 1 << 20,
-    .overflow_policy = Network::WriteOverflowPolicy::DropOldest,
+    .overflow_policy = grpc_utils::WriteOverflowPolicy::DropOldest,
 });
 
 // Only change what differs from the defaults (1024 messages, 64 MiB, DropOldest)
-stream.setWriteQueueLimits({.overflow_policy = Network::WriteOverflowPolicy::DropNewest});
+stream.setWriteQueueLimits({.overflow_policy = grpc_utils::WriteOverflowPolicy::DropNewest});
 
-log("send result: {}", Network::toString(stream.sendRequest(request)));
+log("send result: {}", grpc_utils::toString(stream.sendRequest(request)));
 ```
 
 ---
