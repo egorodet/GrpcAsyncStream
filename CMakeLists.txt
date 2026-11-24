@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(GrpcAsyncStream
-    VERSION 2.0.0
+    VERSION 1.0.0
     DESCRIPTION "Header-only C++ wrappers over the gRPC asynchronous client-streaming, server-streaming and bidirectional client calls"
     HOMEPAGE_URL "https://github.com/egorodet/GrpcAsyncStream"
     LANGUAGES CXX)
