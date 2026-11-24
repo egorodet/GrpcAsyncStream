@@ -22,13 +22,16 @@ namespace TestSupport
 
 namespace proto = ::grpc_async_stream::test;
 
-using Request  = proto::TestRequest;
-using Response = proto::TestResponse;
+using Request       = proto::TestRequest;
+using Response      = proto::TestResponse;
+using UploadSummary = proto::UploadSummary;
 
 class TestStreamService final : public proto::TestStream::Service
 {
 public:
     grpc::Status Chat(grpc::ServerContext* context, grpc::ServerReaderWriter<Response, Request>* stream) override;
+    grpc::Status Upload(grpc::ServerContext* context, grpc::ServerReader<Request>* reader,
+                        UploadSummary* summary) override;
 
     // Delay applied before reading every request: simulates a slow consumer,
     // which makes gRPC flow control push back on the client writes.

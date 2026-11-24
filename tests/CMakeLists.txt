@@ -1,6 +1,7 @@
 add_executable(GrpcAsyncStreamTests
     StreamLifecycleTests.cpp
     WriteQueueTests.cpp
+    WriteStreamTests.cpp
     IntegrationTests.cpp
     TestUtilsUsageTests.cpp)
 
@@ -30,7 +31,8 @@ endif()
 # Every public header must compile on its own (self-contained includes): one
 # translation unit per header, built with the project's warning flags.
 set(_header_check_sources)
-foreach(header IN ITEMS include/grpc_utils/AsyncReadWriteStream.h ${GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS})
+foreach(header IN ITEMS include/grpc_utils/AsyncWriteStream.h include/grpc_utils/AsyncReadWriteStream.h
+                        ${GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS})
     string(MAKE_C_IDENTIFIER "${header}" header_id)
     file(RELATIVE_PATH include_path "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/${header}")
     set(check_source "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${header_id}.cpp")

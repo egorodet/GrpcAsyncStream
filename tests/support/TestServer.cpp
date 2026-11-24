@@ -51,6 +51,15 @@ private:
     std::atomic<std::uint64_t>& m_counter;
 };
 
+std::string clientMetadataValue(const grpc::ServerContext* context)
+{
+    const auto& client_metadata = context->client_metadata();
+    if (auto it = client_metadata.find(grpc::string_ref(metadata_key.data(), metadata_key.size()));
+        it != client_metadata.end())
+        return std::string(it->second.data(), it->second.size());
+    return {};
+}
+
 } // namespace
 
 grpc::Status TestStreamService::Chat(grpc::ServerContext*                         context,
@@ -58,11 +67,7 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
 {
     ActiveCallGuard active(m_active_calls);
 
-    std::string metadata_value;
-    const auto& client_metadata = context->client_metadata();
-    if (auto it = client_metadata.find(grpc::string_ref(metadata_key.data(), metadata_key.size()));
-        it != client_metadata.end())
-        metadata_value.assign(it->second.data(), it->second.size());
+    const std::string metadata_value = clientMetadataValue(context);
 
     std::uint64_t server_seq = 0;
     auto          respond    = [&](std::uint64_t id, const std::string& payload) -> bool {
@@ -121,6 +126,53 @@ grpc::Status TestStreamService::Chat(grpc::ServerContext*                       
         {
             ++m_finished_calls;
             return *std::move(final_status);
+        }
+    }
+
+    if (context->IsCancelled())
+    {
+        ++m_cancelled_calls;
+        return grpc::Status::CANCELLED;
+    }
+    ++m_finished_calls;
+    return grpc::Status::OK;
+}
+
+grpc::Status TestStreamService::Upload(grpc::ServerContext* context, grpc::ServerReader<Request>* reader,
+                                       UploadSummary* summary)
+{
+    ActiveCallGuard active(m_active_calls);
+
+    summary->set_metadata_value(clientMetadataValue(context));
+
+    Request request;
+    while (true)
+    {
+        if (const auto delay = m_read_delay_us.load(); delay > 0)
+            interruptibleSleep(context, std::chrono::microseconds(delay));
+
+        if (!reader->Read(&request))
+            break; // client half-closed or cancelled
+
+        ++m_received_requests;
+
+        if (request.delay_us() > 0)
+            interruptibleSleep(context, std::chrono::microseconds(request.delay_us()));
+
+        if (request.command() == proto::TestRequest::FAIL)
+        {
+            ++m_finished_calls;
+            return grpc::Status(static_cast<grpc::StatusCode>(request.status_code()), request.payload());
+        }
+
+        summary->set_received_count(summary->received_count() + 1);
+        summary->add_ids(request.id());
+        summary->set_payload_bytes(summary->payload_bytes() + request.payload().size());
+
+        if (request.command() == proto::TestRequest::END)
+        {
+            ++m_finished_calls;
+            return grpc::Status::OK;
         }
     }
 

@@ -8,15 +8,19 @@
 #   AddressSanitizer          yes               yes                   yes (/fsanitize)    no
 #   UndefinedBehaviorSanitizer yes              yes                   no                  no
 #   LeakSanitizer             yes               no (not supported)    no                  no
-#   Container-overflow checks yes               no (false positives)  no (link mismatch)  no
+#   Container-overflow checks no                no                    no                  no   (false positives, see below)
 #   Heap tracking (benchmark) yes, unless a sanitizer is enabled (sanitizers replace the allocator)
 #
 # Only this project's code is instrumented; gRPC and its dependencies are not.
 # Checks that require every linked object to be instrumented are therefore off:
 #   - MSVC: the STL's vector/string/optional ASan annotations are disabled, otherwise the
 #     linker rejects mixing instrumented and plain objects (LNK2038 annotate_*).
-#   - macOS: libc++ container-overflow detection reports false positives when
-#     plain (gRPC) code modifies containers created by instrumented code.
+#   - Container-overflow detection is off at run time (ASAN_OPTIONS) on every
+#     platform: it reports false positives when plain library code fills
+#     containers whose spare capacity instrumented code has poisoned, e.g.
+#     libc++ containers modified by gRPC on macOS, or a protobuf RepeatedField
+#     grown by the inline (instrumented) code of a generated message and
+#     filled by the plain protobuf parser.
 #   - GCC/Clang: GRPC_ASAN_SUPPRESSED is defined. gRPC's public headers change
 #     struct layouts when they detect ASan: gpr_mu (pthread builds) gets an extra
 #     `int* leak_checker` member. On macOS grpc::internal::Mutex wraps gpr_mu, so
@@ -53,6 +57,7 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
         set(GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS /INCREMENTAL:NO /DEBUG)
         set(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS
             _DISABLE_VECTOR_ANNOTATION _DISABLE_STRING_ANNOTATION _DISABLE_OPTIONAL_ANNOTATION)
+        list(APPEND GRPC_ASYNC_STREAM_TEST_ENVIRONMENT "ASAN_OPTIONS=detect_container_overflow=0")
         foreach(flags_var CMAKE_CXX_FLAGS_DEBUG CMAKE_CXX_FLAGS_RELWITHDEBINFO CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELWITHDEBINFO)
             # Included at directory scope: this changes the flags of the targets defined after it
             string(REGEX REPLACE "/RTC[1csu]+" "" ${flags_var} "${${flags_var}}")
@@ -75,7 +80,7 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
             list(APPEND GRPC_ASYNC_STREAM_TEST_ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0:detect_container_overflow=0")
             message(STATUS "GrpcAsyncStream: AddressSanitizer + UBSan enabled (LeakSanitizer is not supported on macOS)")
         else()
-            list(APPEND GRPC_ASYNC_STREAM_TEST_ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1")
+            list(APPEND GRPC_ASYNC_STREAM_TEST_ENVIRONMENT "ASAN_OPTIONS=detect_leaks=1:detect_container_overflow=0")
             message(STATUS "GrpcAsyncStream: AddressSanitizer + UBSan + LeakSanitizer enabled")
         endif()
         list(APPEND GRPC_ASYNC_STREAM_TEST_ENVIRONMENT "UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1")

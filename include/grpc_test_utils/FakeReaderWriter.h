@@ -1,8 +1,10 @@
 #pragma once
 
-// Deterministic fake of grpc::ClientAsyncReaderWriterInterface.
+// Deterministic fakes of grpc::ClientAsyncReaderWriterInterface (bidirectional
+// calls, FakeReaderWriter) and grpc::ClientAsyncWriterInterface (client-streaming
+// calls, FakeWriter), both driven by one FakeCall.
 //
-// The fake records every operation started by AsyncReadWriteStream and
+// The fake records every operation started by the stream wrapper and
 // completes it only when the test asks for it, by posting the operation tag to
 // the stream's completion queue through a grpc::Alarm (an alarm that expires
 // immediately completes with ok == true, a cancelled alarm with ok == false).
@@ -71,6 +73,17 @@ public:
     void completeWrite(bool ok = true) { post(m_write_tag, ok); }
     void completeWritesDone(bool ok = true) { post(m_writes_done_tag, ok); }
 
+    // Completes Finish of a client-streaming call: the response is stored into
+    // the message passed to the stub method (see makeFakeWriterFactory)
+    void completeFinish(const grpc::Status& status, R response)
+    {
+        if (m_response)
+            *m_response = std::move(response);
+        else
+            m_violations.emplace_back("completeFinish() with a response for a call without a response message");
+        completeFinish(status);
+    }
+
     void completeFinish(const grpc::Status& status)
     {
         if (m_finish_status)
@@ -79,12 +92,13 @@ public:
         post(m_finish_tag, true);
     }
 
-    // ----- Called by FakeReaderWriter -----
+    // ----- Called by FakeReaderWriter and FakeWriter -----
 
-    void onStartCall(grpc::CompletionQueue* cq, void* tag)
+    void onStartCall(grpc::CompletionQueue* cq, void* tag, R* response = nullptr)
     {
         m_cq        = cq;
         m_start_tag = tag;
+        m_response  = response;
     }
 
     void onRead(R* buffer, void* tag)
@@ -140,7 +154,8 @@ public:
     void onDestroyed()
     {
         m_alarms.clear();
-        m_cq = nullptr;
+        m_cq       = nullptr;
+        m_response = nullptr;
     }
 
 private:
@@ -174,6 +189,7 @@ private:
     void* m_writes_done_tag = nullptr;
     void* m_finish_tag      = nullptr;
 
+    R*            m_response           = nullptr; // response message of a client-streaming call
     grpc::Status* m_finish_status      = nullptr;
     bool          m_writes_done_called = false;
     int           m_finish_calls       = 0;
@@ -208,6 +224,30 @@ private:
     std::shared_ptr<FakeCall<W, R>> m_call;
 };
 
+template<typename W, typename R>
+class FakeWriter final : public grpc::ClientAsyncWriterInterface<W>
+{
+public:
+    explicit FakeWriter(std::shared_ptr<FakeCall<W, R>> call)
+        : m_call(std::move(call))
+    {
+    }
+    ~FakeWriter() override { m_call->onDestroyed(); }
+
+    // Mirrors what the generated Async* stub methods do: start the call right away
+    void start(grpc::CompletionQueue* cq, void* tag, R* response) { m_call->onStartCall(cq, tag, response); }
+
+    void StartCall(void* /*tag*/) override {}
+    void ReadInitialMetadata(void* /*tag*/) override {}
+    void Finish(grpc::Status* status, void* tag) override { m_call->onFinish(status, tag); }
+    void WritesDone(void* tag) override { m_call->onWritesDone(tag); }
+    void Write(const W& msg, void* tag) override { m_call->onWrite(msg, tag); }
+    void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { m_call->onWrite(msg, tag); }
+
+private:
+    std::shared_ptr<FakeCall<W, R>> m_call;
+};
+
 // Stream factory for AsyncReadWriteStream::open() producing a fake stream bound to `call`
 template<typename W, typename R>
 auto makeFakeStreamFactory(std::shared_ptr<FakeCall<W, R>> call)
@@ -216,6 +256,20 @@ auto makeFakeStreamFactory(std::shared_ptr<FakeCall<W, R>> call)
                -> std::unique_ptr<grpc::ClientAsyncReaderWriterInterface<W, R>> {
         auto stream = std::make_unique<FakeReaderWriter<W, R>>(call);
         stream->start(cq, tag);
+        return stream;
+    };
+}
+
+// Stream factory for AsyncWriteStream::open() producing a fake client-streaming
+// call bound to `call`. Like a generated Async* stub method, it takes the message
+// receiving the response, which FakeCall::completeFinish(status, response) fills.
+template<typename W, typename R>
+auto makeFakeWriterFactory(std::shared_ptr<FakeCall<W, R>> call, R* response)
+{
+    return [call, response](grpc::ClientContext*, grpc::CompletionQueue* cq, void* tag)
+               -> std::unique_ptr<grpc::ClientAsyncWriterInterface<W>> {
+        auto stream = std::make_unique<FakeWriter<W, R>>(call);
+        stream->start(cq, tag, response);
         return stream;
     };
 }

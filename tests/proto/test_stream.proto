@@ -34,7 +34,22 @@ message TestResponse
     uint64 server_seq     = 4; // sequence number of this response within the call
 }
 
+// Response of the client-streaming Upload call
+message UploadSummary
+{
+    uint64          received_count = 1; // requests received by the server
+    repeated fixed64 ids           = 2; // their ids, in the order of arrival
+    uint64          payload_bytes  = 3; // total size of their payloads
+    string          metadata_value = 4; // value of the "x-test-metadata" client metadata, if any
+}
+
 service TestStream
 {
     rpc Chat(stream TestRequest) returns (stream TestResponse);
+
+    // Client-streaming: the server reads requests until the client half-closes
+    // and then replies with the summary. Commands: ECHO and BURST are just
+    // recorded, FAIL ends the call with an error, END ends it with OK and the
+    // summary without waiting for the half-close.
+    rpc Upload(stream TestRequest) returns (UploadSummary);
 }

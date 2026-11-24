@@ -1,10 +1,12 @@
 #pragma once
 
-// Helpers for testing code built on grpc_utils::AsyncReadWriteStream:
-// polling a stream until a condition holds or the call ends, and inspecting
-// sequences of messages. Test-framework independent; requires only gRPC.
+// Helpers for testing code built on grpc_utils::AsyncReadWriteStream and
+// grpc_utils::AsyncWriteStream: polling a stream until a condition holds or the
+// call ends, and inspecting sequences of messages. Test-framework independent;
+// requires only gRPC.
 
 #include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_utils/AsyncWriteStream.h>
 
 #include <algorithm>
 #include <chrono>
@@ -25,9 +27,22 @@ concept PollableStream = requires(Stream& stream) {
     { stream.isOpen() } -> std::convertible_to<bool>;
 };
 
+// A stream polled with the given response handler, like grpc_utils::AsyncReadWriteStream
+template<typename Stream, typename Handler>
+concept PollableWithHandler = PollableStream<Stream> && requires(Stream& stream, Handler& handler) {
+    { stream.pollFor(handler, 1ms) } -> std::convertible_to<bool>;
+};
+
+// A stream polled without a handler, like grpc_utils::AsyncWriteStream
+template<typename Stream>
+concept PollableWithoutHandler = PollableStream<Stream> && requires(Stream& stream) {
+    { stream.pollFor(1ms) } -> std::convertible_to<bool>;
+};
+
 // Polls the stream until the predicate becomes true, the call ends, or the
 // timeout expires. Returns the final value of the predicate.
 template<PollableStream Stream, typename Handler, std::predicate Predicate>
+    requires PollableWithHandler<Stream, Handler>
 bool pollUntil(Stream& stream, Handler&& handler, Predicate&& predicate,
                std::chrono::milliseconds timeout = std::chrono::seconds(10))
 {
@@ -44,6 +59,7 @@ bool pollUntil(Stream& stream, Handler&& handler, Predicate&& predicate,
 
 // Polls the stream until the call ends or the timeout expires. Returns true if the call ended.
 template<PollableStream Stream, typename Handler>
+    requires PollableWithHandler<Stream, Handler>
 bool pollUntilClosed(Stream& stream, Handler&& handler, std::chrono::milliseconds timeout = std::chrono::seconds(10))
 {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
@@ -52,6 +68,35 @@ bool pollUntilClosed(Stream& stream, Handler&& handler, std::chrono::millisecond
         if (std::chrono::steady_clock::now() > deadline)
             return false;
         stream.pollFor(handler, 1ms);
+    }
+    return true;
+}
+
+// pollUntil() for streams without responses (grpc_utils::AsyncWriteStream)
+template<PollableWithoutHandler Stream, std::predicate Predicate>
+bool pollUntil(Stream& stream, Predicate&& predicate, std::chrono::milliseconds timeout = std::chrono::seconds(10))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (!predicate())
+    {
+        if (std::chrono::steady_clock::now() > deadline)
+            return predicate();
+        if (!stream.pollFor(1ms))
+            return predicate();
+    }
+    return true;
+}
+
+// pollUntilClosed() for streams without responses (grpc_utils::AsyncWriteStream)
+template<PollableWithoutHandler Stream>
+bool pollUntilClosed(Stream& stream, std::chrono::milliseconds timeout = std::chrono::seconds(10))
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (stream.isOpen())
+    {
+        if (std::chrono::steady_clock::now() > deadline)
+            return false;
+        stream.pollFor(1ms);
     }
     return true;
 }

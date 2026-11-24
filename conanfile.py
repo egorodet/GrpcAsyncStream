@@ -23,7 +23,7 @@ class GrpcAsyncStreamConan(ConanFile):
     name = "grpc-async-stream"
     version = "2.0.0"
     license = "MIT"
-    description = "Header-only C++20 wrapper over the gRPC asynchronous bidirectional client stream"
+    description = "Header-only C++20 wrappers over the gRPC asynchronous client-streaming and bidirectional client streams"
     url = "https://github.com/egorodet/GrpcAsyncStream"
     settings = "os", "arch", "compiler", "build_type"
     options = {
