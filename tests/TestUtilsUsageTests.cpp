@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Usage of the reusable test utilities (GrpcAsyncStream::TestUtils) the way a
 // product's own tests would use them: only <grpc_async_stream/...> and
 // <grpc_async_stream_test/...> are included, nothing from this repository's tests.

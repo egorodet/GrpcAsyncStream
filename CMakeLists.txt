@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(GrpcAsyncStream
-    VERSION 2.0.0
+    VERSION 1.0.0
     DESCRIPTION "Header-only C++ wrappers over the gRPC asynchronous client-streaming, server-streaming and bidirectional client calls"
     HOMEPAGE_URL "https://github.com/egorodet/GrpcAsyncStream"
     LANGUAGES CXX)
@@ -89,6 +89,7 @@ target_compile_features(GrpcAsyncStream INTERFACE cxx_std_20)
 target_sources(GrpcAsyncStream INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncCallBase.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncWriteStream.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/RingQueue.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadStream.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadWriteStream.h>)
 

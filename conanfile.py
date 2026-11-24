@@ -26,7 +26,7 @@ from conan.tools.cmake import CMakeDeps, CMakeToolchain, cmake_layout
 
 class GrpcAsyncStreamConan(ConanFile):
     name = "grpc-async-stream"
-    version = "2.0.0"
+    version = "1.0.0"
     license = "MIT"
     description = "Header-only C++20 wrappers over the gRPC asynchronous client-streaming, server-streaming and bidirectional client calls"
     url = "https://github.com/egorodet/GrpcAsyncStream"

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Benchmarks of AsyncReadWriteStream, AsyncReadStream and AsyncWriteStream:
 //
 //  [latency]     ping-pong round-trip time through a real in-process gRPC server

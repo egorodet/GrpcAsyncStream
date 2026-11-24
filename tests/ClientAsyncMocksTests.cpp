@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Tests of the extensible client stream mocks (grpc_async_stream_test/ClientAsyncMocks.h):
 // the mocks used as they are and through derived mocks that change the default
 // behaviour (start-call completed right away or failing, echoed and scripted
@@ -191,6 +195,60 @@ TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]
     }
     CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
     cq.Shutdown();
+}
+
+TEST_CASE("Mocks expose the written requests and pop them one by one", "[mocks]")
+{
+    grpc::CompletionQueue cq;
+    int                   tag = 0;
+
+    SECTION("bidirectional mock")
+    {
+        BidiMock mock(&cq);
+        CHECK(mock.writtenRequests().empty());
+        mock.StartCall(&tag);
+        mock.call().completeStart();
+        mock.Write(makeRequest(1), &tag);
+        mock.call().completeWrite();
+        mock.Write(makeRequest(2), grpc::WriteOptions(), &tag);
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
+        CHECK(&mock.writtenRequests() == &mock.call().writes());
+
+        Request request;
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 1);
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 2);
+        CHECK_FALSE(mock.popWrittenRequest(request));
+        CHECK(mock.writtenRequests().size() == 2);
+    }
+    SECTION("client-streaming mock")
+    {
+        WriterMock mock(&cq);
+        CHECK(mock.writtenRequests().empty());
+        mock.StartCall(&tag);
+        mock.call().completeStart();
+        mock.Write(makeRequest(3), &tag);
+        mock.call().completeWrite();
+        mock.Write(makeRequest(4), grpc::WriteOptions(), &tag);
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
+        CHECK(&mock.writtenRequests() == &mock.call().writes());
+
+        Request request;
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 3);
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 4);
+        CHECK_FALSE(mock.popWrittenRequest(request));
+        CHECK(mock.writtenRequests().size() == 2);
+    }
+    // Drain the completions posted by the mock before the queue is destroyed
+    cq.Shutdown();
+    void* event_tag = nullptr;
+    bool  ok        = false;
+    while (cq.Next(&event_tag, &ok))
+    {
+    }
 }
 
 TEST_CASE("Derived bidirectional mock echoes the requests through enqueueResponse", "[mocks]")

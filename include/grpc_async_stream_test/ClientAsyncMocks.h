@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 #pragma once
 
 // Extensible mocks of the gRPC client stream interfaces:
@@ -55,10 +59,12 @@
 #include <grpcpp/support/async_stream.h>
 
 #include <concepts>
+#include <cstddef>
 #include <deque>
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace grpc_async_stream_test
 {
@@ -180,11 +186,31 @@ public:
     void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
     void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
     void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+
+    // The requests passed to Write() so far, in order (also available through
+    // call().writes(), which outlives the mock when kept with sharedCall())
+    [[nodiscard]] const std::vector<W>& writtenRequests() const noexcept { return this->call().writes(); }
+
+    // Reads the written requests one by one, in order: copies the oldest request
+    // not popped yet into `request` and returns true, or returns false when all
+    // written requests were popped. writtenRequests() keeps all of them.
+    [[nodiscard]] bool popWrittenRequest(W& request)
+    {
+        const std::vector<W>& written = this->call().writes();
+        if (m_popped_requests >= written.size())
+            return false;
+        request = written[m_popped_requests++];
+        return true;
+    }
+
     void Read(R* msg, void* tag) override
     {
         this->call().onRead(msg, tag);
         this->deliverQueuedResponse();
     }
+
+private:
+    std::size_t m_popped_requests = 0;
 };
 
 // Mock of grpc::ClientAsyncWriterInterface<W> for client-streaming calls
@@ -208,6 +234,25 @@ public:
     void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
     void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
     void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+
+    // The requests passed to Write() so far, in order (also available through
+    // call().writes(), which outlives the mock when kept with sharedCall())
+    [[nodiscard]] const std::vector<W>& writtenRequests() const noexcept { return this->call().writes(); }
+
+    // Reads the written requests one by one, in order: copies the oldest request
+    // not popped yet into `request` and returns true, or returns false when all
+    // written requests were popped. writtenRequests() keeps all of them.
+    [[nodiscard]] bool popWrittenRequest(W& request)
+    {
+        const std::vector<W>& written = this->call().writes();
+        if (m_popped_requests >= written.size())
+            return false;
+        request = written[m_popped_requests++];
+        return true;
+    }
+
+private:
+    std::size_t m_popped_requests = 0;
 };
 
 // Mock of grpc::ClientAsyncReaderInterface<R> for server-streaming calls

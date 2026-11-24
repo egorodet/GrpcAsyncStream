@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 #pragma once
 
 // Catch2 string makers: grpc_async_stream enumerations and grpc::StatusCode are shown
