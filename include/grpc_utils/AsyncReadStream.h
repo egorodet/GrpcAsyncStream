@@ -92,11 +92,13 @@ public:
         return true;
     }
 
-    // Cancels the call (if still active) and releases all resources.
+    // Cancels the call (if still active) and releases all resources, including
+    // the memory of the read buffers.
     void close()
     {
         Base::close();
-        m_pending_response.Clear();
+        m_pending_response = ResponseProto{};
+        m_spare_response   = ResponseProto{};
     }
 
     // Non-blocking processing of up to max_events currently available stream
@@ -144,10 +146,21 @@ protected:
 
         // Move the message out before re-arming the read: the read buffer is
         // overwritten by the next read, and the handler may keep the message.
+        // The next read goes into the spare buffer, which holds the cleared
+        // message of the previous event: Clear() keeps the capacity of string,
+        // bytes and repeated fields, so a handler that does not take the
+        // message saves gRPC from reallocating them for every response.
         ResponseProto response = std::move(m_pending_response);
-        m_pending_response.Clear();
+        m_pending_response     = std::move(m_spare_response);
         startRead();
         response_handler(std::move(response));
+        // Recycle what the handler left (an empty message if it took it), unless
+        // it closed the stream, which releases the buffers.
+        if (this->isOpen())
+        {
+            response.Clear();
+            m_spare_response = std::move(response);
+        }
     }
 
 private:
@@ -163,7 +176,8 @@ private:
         this->setReadOperationPending(true);
     }
 
-    ResponseProto m_pending_response;
+    ResponseProto m_pending_response; // target of the outstanding read
+    ResponseProto m_spare_response;   // cleared buffer for the next read (see handleEvent)
 };
 
 } // namespace grpc_utils

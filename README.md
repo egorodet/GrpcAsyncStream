@@ -158,7 +158,7 @@ classDiagram
         +writeQueueStats() WriteQueueStats
         #handleEvent(tag, ok, context)
         #enterFinishing()
-        -deque~PendingWrite~ pending_writes
+        -RingQueue~PendingWrite~ pending_writes
         -Req current_write
     }
     class AsyncReadStream~Resp, Base~ {
@@ -168,6 +168,7 @@ classDiagram
         +close()
         #handleEvent(tag, ok, handler)
         -Resp pending_response
+        -Resp spare_response
     }
     class AsyncReadWriteStream~Req, Resp~ {
         +getReaderWriter() ClientAsyncReaderWriterInterface*
@@ -305,11 +306,14 @@ goes into the bounded queue. The write slot is busy from `open()` until the star
 with `GRPC_CALL_ERROR_TOO_MANY_OPERATIONS`), during every `Write`, and during `WritesDone`.
 Whenever a write completes successfully, the next queued request is written, or the pending
 half-close is issued, or `Finish` is attempted when the call is ending. The message being written
-is kept alive in a member until its completion, then cleared to release its memory.
+is kept alive in a member until its completion, then reset to release its memory.
 
 **Read path.** Exactly one `Read` is outstanding for the whole call. On completion the message is
 moved out of the read buffer, the next `Read` is armed, and only then is the handler invoked, so the
-handler may keep the message and may call back into the stream.
+handler may keep the message and may call back into the stream. The next `Read` goes into a spare
+buffer holding the cleared message of the previous response: a handler that does not take the message
+saves gRPC from reallocating its string, bytes and repeated fields for every response. At most one such
+spare message is kept while the call is open; `close()` releases both buffers.
 
 **End of call.** A failed read means the server ended the stream (or the call broke). The stream
 stops accepting writes, discards queued requests and calls `Finish` once no write is outstanding;
@@ -347,8 +351,9 @@ the configured policy. `WriteQueueLimits::unbounded()` restores unlimited buffer
 
 **Memory guarantee.** The memory held by the stream for outgoing requests is at most
 `max_bytes` (queued requests, serialized-size measure) plus the one request in flight, plus the
-per-entry container overhead for at most `max_messages` entries. The deque's spare blocks are released
-again once a load peak (more than 256 queued requests) is over.
+per-entry container overhead for at most `max_messages` entries. The queue is a ring buffer that grows
+by doubling and allocates nothing per request; its storage is released again once a load peak (more than
+256 queued requests) is over.
 
 > `ByteSizeLong()` is the serialized size; the in-memory size of a protobuf message is somewhat larger
 > (object header, string capacities). Choose `max_bytes` with that margin in mind, or rely on
@@ -701,7 +706,7 @@ built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
 | UndefinedBehaviorSanitizer | ✔ | ✔ | ✘ not available | ✘ |
 | LeakSanitizer | ✔ | ✘ not supported, `detect_leaks=0` | ✘ | ✘ |
 | Container-overflow checks | ✘ `detect_container_overflow=0` | ✘ `detect_container_overflow=0` | ✘ `detect_container_overflow=0`, `_DISABLE_{VECTOR,STRING,OPTIONAL}_ANNOTATION` | ✘ |
-| Benchmark heap tracking | ✔ `malloc_usable_size` | ✔ `malloc_size` | ✔ `_msize` | ✔ `_msize` |
+| Benchmark heap tracking | ✔ | ✔ | ✔ | ✔ |
 | Benchmark RSS | ✔ `/proc/self/statm` | ✔ `task_info` | ✔ `GetProcessMemoryInfo` | ✔ |
 
 Notes:
@@ -726,8 +731,9 @@ Notes:
   quarantine freed memory), so it is off in sanitizer builds — both by CMake and by a compile-time
   check in `MemoryTracker.cpp`. The heavy-load benchmark then reports heap figures as `n/a`, still
   verifies the queue's own byte and message bounds, and skips the heap comparison with a warning.
-- On platforms without a usable-size API, heap tracking is compiled out the same way; without an RSS
-  API, RSS is reported as `n/a`.
+- Heap tracking counts the requested bytes of every C++ allocation and keeps each block's size in a
+  header in front of it, so it works on every platform and adds no allocator queries (such as `_msize`,
+  which takes the heap lock on Windows) to the measured code. Without an RSS API, RSS is reported as `n/a`.
 - The test server simulates slow consumers with microsecond delays. `sleep_for` has ~1 ms
   granularity on Windows (and is coarse on macOS), so the last stretch of each delay is spent
   yielding: results are comparable across platforms.
@@ -802,6 +808,8 @@ selected by tag:
 |---|---|
 | `[latency]` | Ping-pong round-trip (send one request, wait for its echo) with 64 B and 16 KiB payloads |
 | `[throughput]` | 1000 pipelined echoes with 64 B, 1 KiB and 16 KiB payloads |
+| `[read]` | `AsyncReadStream`: a server-streaming call delivering 1000 responses of 64 B, 1 KiB and 16 KiB |
+| `[write]` | `AsyncWriteStream`: a client-streaming call sending 1000 requests of 64 B, 1 KiB and 16 KiB, then the half-close and the final status |
 | `[queue]` | Cost of `sendRequest()` when enqueueing, rejecting (`DropNewest`, full) and evicting (`DropOldest`, full) |
 | `[load]` | Heavy load against a slow server, comparing unbounded and bounded queues: peak C++ heap growth, peak RSS growth, peak queue size/bytes, written/dropped/received counts, mean send cost, produce and drain time, p50/p99 send→echo latency, and a histogram of `sendRequest()` results per `SendResult` |
 
@@ -819,6 +827,9 @@ GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US=50 ./build/benchmarks/GrpcAsyncStreamBen
 ```
 
 `ctest --test-dir build -L benchmark` runs all of them through CTest.
+
+[docs/Optimizations.md](docs/Optimizations.md) describes how the streams were profiled under heavy load,
+the bottlenecks found and the optimizations made, with their measured effect.
 
 ### Sample results
 

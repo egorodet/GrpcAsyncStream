@@ -388,6 +388,65 @@ TEST_CASE("Requests sent while the queue drains are accepted again", "[write-que
     CHECK(f.call->violations().empty());
 }
 
+TEST_CASE("The ring buffer of the write queue keeps FIFO order across wrap-around and growth", "[write-queue]")
+{
+    grpc_utils::detail::RingQueue<std::string> queue;
+    std::uint64_t                              next_in  = 0;
+    std::uint64_t                              next_out = 0;
+
+    // Move the head forward so that the contents wrap around the end of the
+    // storage, then grow while wrapped (16 -> 32 -> 64 slots)
+    for (int i = 0; i < 10; ++i)
+        queue.pushBack(std::to_string(next_in++));
+    for (int i = 0; i < 7; ++i)
+        CHECK(queue.popFront() == std::to_string(next_out++));
+    for (int i = 0; i < 50; ++i)
+        queue.pushBack(std::to_string(next_in++));
+    CHECK(queue.size() == next_in - next_out);
+
+    // popBack takes the newest element, front() is the oldest one
+    CHECK(queue.popBack() == std::to_string(--next_in));
+    CHECK(queue.front() == std::to_string(next_out));
+    while (!queue.empty())
+        CHECK(queue.popFront() == std::to_string(next_out++));
+    CHECK(next_out == next_in);
+
+    // Usable again after releasing the storage
+    queue.pushBack("a");
+    queue.release();
+    CHECK(queue.empty());
+    queue.pushBack("b");
+    CHECK(queue.popFront() == "b");
+}
+
+TEST_CASE("Queued requests are written in order when the queue wraps around and grows", "[write-queue]")
+{
+    QueueFixture f(WriteQueueLimits::unbounded());
+    std::uint64_t id = 0;
+    for (; id < 10; ++id)
+        REQUIRE(isAccepted(f.stream.sendRequest(makeEcho(id))));
+
+    // Write a few, so that the queue's head moves forward
+    f.call->completeStart();
+    for (std::size_t written = 1; written <= 6; ++written)
+    {
+        REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.call->writePending(); }));
+        f.call->completeWrite();
+        REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.stream.writeQueueStats().written_messages == written; }));
+    }
+
+    // 3 requests are left in the queue: the next ones wrap around and grow it while wrapped
+    for (; id < 40; ++id)
+        REQUIRE(isAccepted(f.stream.sendRequest(makeEcho(id))));
+
+    const auto ids = f.drain();
+    REQUIRE(ids.size() == 40);
+    for (std::uint64_t i = 0; i < ids.size(); ++i)
+        CHECK(ids[i] == i);
+    checkInvariant(f.stream.writeQueueStats());
+    CHECK(f.call->violations().empty());
+}
+
 TEST_CASE("Closing the stream discards and accounts the queued requests", "[write-queue]")
 {
     QueueFixture f(limits(10, unlimited, WriteOverflowPolicy::DropOldest));

@@ -7,6 +7,7 @@
 // AsyncReadWriteStream. Applications use those classes; this header only
 // holds what they have in common.
 
+#include <grpc/support/time.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
@@ -272,11 +273,20 @@ protected:
         return reinterpret_cast<void*>(static_cast<std::underlying_type_t<Tag>>(tag));
     }
 
+    // Deadline for AsyncNext on the monotonic clock: gRPC would otherwise convert
+    // a system_clock deadline to its monotonic clock on every call, and the wait
+    // must not be stretched or cut short by changes of the wall clock.
     template<typename Rep, typename Period>
-    static std::chrono::system_clock::time_point deadlineAfter(std::chrono::duration<Rep, Period> timeout)
+    static gpr_timespec deadlineAfter(std::chrono::duration<Rep, Period> timeout)
     {
-        return std::chrono::system_clock::now() +
-               std::chrono::duration_cast<std::chrono::system_clock::duration>(timeout);
+        // Timeouts beyond a year mean "wait for the first event" (and must not overflow)
+        if (timeout >= std::chrono::hours(24 * 365))
+            return gpr_inf_future(GPR_CLOCK_MONOTONIC);
+        const auto micros = std::chrono::ceil<std::chrono::microseconds>(timeout).count();
+        if (micros <= 0)
+            return gpr_inf_past(GPR_CLOCK_MONOTONIC);
+        return gpr_time_add(gpr_now(GPR_CLOCK_MONOTONIC),
+                            gpr_time_from_micros(static_cast<std::int64_t>(micros), GPR_TIMESPAN));
     }
 
 private:

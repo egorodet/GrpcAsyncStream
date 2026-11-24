@@ -13,9 +13,9 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <limits>
 #include <utility>
+#include <vector>
 
 namespace grpc_utils
 {
@@ -105,6 +105,78 @@ enum class SendResult
     using enum SendResult;
     return result == Written || result == Queued || result == QueuedDroppedOldest;
 }
+
+namespace detail
+{
+
+// FIFO queue on a ring buffer whose capacity is a power of two and grows by
+// doubling. Unlike std::deque it does not allocate per element (MSVC's deque
+// allocates one block per element larger than 8 bytes), so pushing and popping
+// in steady state allocate nothing. Popped slots are left in the moved-from
+// state; release() frees the storage.
+template<typename T>
+    requires std::default_initializable<T> && std::movable<T>
+class RingQueue
+{
+public:
+    [[nodiscard]] bool        empty() const noexcept { return m_size == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return m_size; }
+
+    [[nodiscard]] T& front() noexcept { return m_slots[m_head]; }
+
+    void pushBack(T&& value)
+    {
+        if (m_size == m_slots.size())
+            grow();
+        m_slots[slot(m_size)] = std::move(value);
+        ++m_size;
+    }
+
+    T popFront()
+    {
+        T value = std::move(m_slots[m_head]);
+        m_head  = slot(1);
+        --m_size;
+        return value;
+    }
+
+    T popBack()
+    {
+        --m_size;
+        return std::move(m_slots[slot(m_size)]);
+    }
+
+    // Destroys all elements and frees the storage.
+    void release() noexcept
+    {
+        std::vector<T>().swap(m_slots);
+        m_head = 0;
+        m_size = 0;
+    }
+
+private:
+    static constexpr std::size_t initial_capacity = 16;
+
+    [[nodiscard]] std::size_t slot(std::size_t offset) const noexcept
+    {
+        return (m_head + offset) & (m_slots.size() - 1);
+    }
+
+    void grow()
+    {
+        std::vector<T> slots(m_slots.empty() ? initial_capacity : m_slots.size() * 2);
+        for (std::size_t i = 0; i < m_size; ++i)
+            slots[i] = std::move(m_slots[slot(i)]);
+        m_slots.swap(slots);
+        m_head = 0;
+    }
+
+    std::vector<T> m_slots;
+    std::size_t    m_head = 0;
+    std::size_t    m_size = 0;
+};
+
+} // namespace detail
 
 // The write side of an asynchronous client stream: satisfied by
 // grpc::ClientAsyncWriterInterface<Request> (client-streaming calls) and
@@ -199,7 +271,7 @@ public:
             ++m_stats.discarded_messages;
             m_stats.write_in_flight = false;
         }
-        m_current_write.Clear();
+        m_current_write = RequestProto{};
     }
 
     // True while new requests may be sent.
@@ -319,7 +391,8 @@ protected:
             }
             ++m_stats.written_messages;
             // The written message is no longer needed by gRPC: free its memory now
-            m_current_write.Clear();
+            // (Clear() would keep the capacity of its string and repeated fields)
+            m_current_write = RequestProto{};
             onWriteSlotFree();
             break;
 
@@ -353,7 +426,7 @@ private:
     struct PendingWrite
     {
         RequestProto request;
-        std::size_t  bytes;
+        std::size_t  bytes = 0;
     };
 
     auto eventHandler()
@@ -382,7 +455,7 @@ private:
             dropped_oldest = true;
         }
 
-        m_pending_writes.push_back({.request = std::move(request), .bytes = bytes});
+        m_pending_writes.pushBack({.request = std::move(request), .bytes = bytes});
         ++m_stats.queued_messages;
         m_stats.queued_bytes += bytes;
         m_stats.peak_queued_messages = std::max(m_stats.peak_queued_messages, m_stats.queued_messages);
@@ -413,25 +486,23 @@ private:
 
     void dropPendingBack()
     {
-        const std::size_t bytes = m_pending_writes.back().bytes;
-        dropRequest(bytes);
+        const PendingWrite dropped = m_pending_writes.popBack();
+        dropRequest(dropped.bytes);
         --m_stats.queued_messages;
-        m_stats.queued_bytes -= bytes;
-        m_pending_writes.pop_back();
+        m_stats.queued_bytes -= dropped.bytes;
         shrinkQueueIfEmpty();
     }
 
     RequestProto popPendingFront()
     {
-        PendingWrite pending = std::move(m_pending_writes.front());
-        m_pending_writes.pop_front();
+        PendingWrite pending = m_pending_writes.popFront();
         --m_stats.queued_messages;
         m_stats.queued_bytes -= pending.bytes;
         shrinkQueueIfEmpty();
         return std::move(pending.request);
     }
 
-    // std::deque keeps its spare blocks after being drained; release them once
+    // The ring buffer keeps its capacity after being drained; release it once
     // a load peak is over so that the memory footprint returns to the baseline.
     // Small fluctuations of the queue are ignored to avoid reallocation churn.
     void shrinkQueueIfEmpty()
@@ -439,7 +510,7 @@ private:
         static constexpr std::size_t shrink_threshold = 256;
         if (m_pending_writes.empty() && m_queue_peak_since_shrink > shrink_threshold)
         {
-            std::deque<PendingWrite>().swap(m_pending_writes);
+            m_pending_writes.release();
             m_queue_peak_since_shrink = 0;
         }
     }
@@ -450,7 +521,7 @@ private:
         m_stats.queued_messages   = 0;
         m_stats.queued_bytes      = 0;
         m_queue_peak_since_shrink = 0;
-        std::deque<PendingWrite>().swap(m_pending_writes);
+        m_pending_writes.release();
     }
 
     void startWrite(RequestProto request)
@@ -482,7 +553,7 @@ private:
     }
 
     RequestProto             m_current_write;
-    std::deque<PendingWrite> m_pending_writes;
+    detail::RingQueue<PendingWrite> m_pending_writes;
     WriteQueueLimits         m_limits;
     WriteQueueStats          m_stats;
     std::size_t              m_queue_peak_since_shrink = 0;

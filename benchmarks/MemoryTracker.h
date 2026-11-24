@@ -3,11 +3,12 @@
 // Process memory instrumentation for the benchmarks.
 //
 // Heap tracking: when enabled (GRPC_ASYNC_STREAM_HEAP_TRACKING=1, the default
-// outside sanitizer builds) and the C runtime can report the usable size of a
-// heap block (glibc/musl/Android malloc_usable_size, macOS malloc_size, Windows
-// _msize), MemoryTracker.cpp replaces the global operator new / delete with
-// versions that keep exact counters of the live C++ heap bytes and their
-// high-water mark. Memory allocated directly with malloc (e.g. by the gRPC C
+// outside sanitizer builds), MemoryTracker.cpp replaces the global operator
+// new / delete with versions that keep exact counters of the live C++ heap
+// bytes (as requested, without allocator rounding) and their high-water mark.
+// The size of each block is kept in a small header in front of it, so that
+// tracking adds no allocator queries (such as _msize, which takes the heap lock
+// on Windows) to the code being measured. Memory allocated directly with malloc (e.g. by the gRPC C
 // core) is not included; it is covered by the resident set size (RSS).
 //
 // RSS: /proc/self/statm on Linux, task_info on macOS, GetProcessMemoryInfo on
