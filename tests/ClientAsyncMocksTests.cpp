@@ -5,8 +5,8 @@
 // Tests of the extensible client stream mocks (grpc_async_stream_test/ClientAsyncMocks.h):
 // the mocks used as they are and through derived mocks that change the default
 // behaviour (start-call completed right away or failing, echoed and scripted
-// responses pushed with enqueueResponse()), driving AsyncReadWriteStream,
-// AsyncWriteStream and AsyncReadStream.
+// responses pushed with enqueueResponse()) or constructed with auto-completion,
+// driving AsyncReadWriteStream, AsyncWriteStream and AsyncReadStream.
 
 #include "support/TestServer.h"
 
@@ -19,9 +19,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <type_traits>
@@ -69,10 +71,13 @@ static_assert(std::has_virtual_destructor_v<BidiMock> && std::has_virtual_destru
               std::has_virtual_destructor_v<ReaderMock>);
 static_assert(!std::is_copy_constructible_v<BidiMock> && !std::is_move_constructible_v<BidiMock>);
 
-// Constructed from the completion queue only
+// Constructed from the completion queue, optionally with auto-completion
 static_assert(std::is_constructible_v<BidiMock, grpc::CompletionQueue*> && !std::is_default_constructible_v<BidiMock>);
 static_assert(std::is_constructible_v<WriterMock, grpc::CompletionQueue*> && !std::is_default_constructible_v<WriterMock>);
 static_assert(std::is_constructible_v<ReaderMock, grpc::CompletionQueue*> && !std::is_default_constructible_v<ReaderMock>);
+static_assert(std::is_constructible_v<BidiMock, grpc::CompletionQueue*, bool> &&
+              std::is_constructible_v<WriterMock, grpc::CompletionQueue*, bool> &&
+              std::is_constructible_v<ReaderMock, grpc::CompletionQueue*, bool>);
 static_assert(!std::is_convertible_v<grpc::CompletionQueue*, BidiMock>); // explicit
 
 static_assert(ClientAsyncMock<BidiMock> && ClientAsyncMock<WriterMock> && ClientAsyncMock<ReaderMock>);
@@ -83,6 +88,12 @@ static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFa
 static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFactory<WriterMock>()),
                                                        grpc::ClientAsyncWriterInterface<Request>>);
 static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFactory<ReaderMock>()),
+                                                       grpc::ClientAsyncReaderInterface<Response>>);
+static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFactory<BidiMock>(true)),
+                                                       grpc::ClientAsyncReaderWriterInterface<Request, Response>>);
+static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFactory<WriterMock>(true)),
+                                                       grpc::ClientAsyncWriterInterface<Request>>);
+static_assert(grpc_async_stream::AsyncStreamFactoryFor<decltype(makeMockStreamFactory<ReaderMock>(true)),
                                                        grpc::ClientAsyncReaderInterface<Response>>);
 
 // ----- Derived mocks -----
@@ -166,6 +177,24 @@ public:
     std::shared_ptr<bool> destroyed;
 };
 
+// Drains the completion queue and describes the completions it delivered as
+// "<tag name>: ok" or "<tag name>: failed", sorted: the queue does not deliver
+// the completions of the mocks in the order they were posted
+std::vector<std::string> drainCompletions(grpc::CompletionQueue& cq, const std::map<void*, std::string>& tag_names)
+{
+    cq.Shutdown();
+    std::vector<std::string> completions;
+    void*                    tag = nullptr;
+    bool                     ok  = false;
+    while (cq.Next(&tag, &ok))
+    {
+        const auto name = tag_names.find(tag);
+        completions.push_back((name != tag_names.end() ? name->second : "unknown tag") + (ok ? ": ok" : ": failed"));
+    }
+    std::ranges::sort(completions);
+    return completions;
+}
+
 } // namespace
 
 TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]")
@@ -178,6 +207,7 @@ TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]
         CHECK(&mock.call() == call.get());
         CHECK(mock.completionQueue() == &cq);
         CHECK_FALSE(mock.started());
+        CHECK_FALSE(mock.autoComplete()); // the test completes the operations by default
 
         int tag = 0;
         mock.Write(makeRequest(1), &tag);
@@ -375,5 +405,169 @@ TEST_CASE("Closing the stream destroys its derived mock", "[mocks]")
     CHECK(*destroyed);
     CHECK_FALSE(stream.isOpen());
     CHECK(stream.status().error_code() == grpc::StatusCode::CANCELLED);
+    CHECK(call->violations().empty());
+}
+
+TEST_CASE("Auto-completing mocks complete every operation they record", "[mocks]")
+{
+    grpc::CompletionQueue cq;
+    int                   start_tag       = 0;
+    int                   write_tag       = 0;
+    int                   writes_done_tag = 0;
+    int                   finish_tag      = 0;
+    grpc::Status          status(grpc::StatusCode::UNKNOWN, "not finished");
+
+    int                   read_tag        = 0;
+
+    const std::map<void*, std::string> tag_names{{&start_tag, "start"},
+                                                 {&write_tag, "write"},
+                                                 {&writes_done_tag, "writes-done"},
+                                                 {&finish_tag, "finish"},
+                                                 {&read_tag, "read"}};
+    const std::vector<std::string> expected_completions{"finish: ok", "start: ok", "write: ok", "write: ok",
+                                                        "writes-done: ok"};
+
+    SECTION("bidirectional mock")
+    {
+        BidiMock mock(&cq, true);
+        CHECK(mock.autoComplete());
+        mock.StartCall(&start_tag);
+        CHECK_FALSE(mock.call().startPending());
+        mock.Write(makeRequest(1), &write_tag);
+        CHECK_FALSE(mock.call().writePending());
+        mock.Write(makeRequest(2), grpc::WriteOptions(), &write_tag);
+        CHECK_FALSE(mock.call().writePending());
+        mock.WritesDone(&writes_done_tag);
+        CHECK_FALSE(mock.call().writesDonePending());
+        mock.Finish(&status, &finish_tag);
+        CHECK_FALSE(mock.call().finishPending());
+
+        CHECK(status.ok());
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
+        CHECK(mock.call().violations().empty());
+        CHECK(drainCompletions(cq, tag_names) == expected_completions);
+    }
+    SECTION("client-streaming mock")
+    {
+        WriterMock mock(&cq, true);
+        CHECK(mock.autoComplete());
+        mock.StartCall(&start_tag);
+        mock.Write(makeRequest(3), &write_tag);
+        mock.Write(makeRequest(4), grpc::WriteOptions(), &write_tag);
+        mock.WritesDone(&writes_done_tag);
+        mock.Finish(&status, &finish_tag);
+
+        CHECK(status.ok());
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
+        CHECK(mock.call().violations().empty());
+        CHECK(drainCompletions(cq, tag_names) == expected_completions);
+    }
+    SECTION("server-streaming mock: the reads are completed by the responses and ended by the test")
+    {
+        ReaderMock mock(&cq, true);
+        CHECK(mock.autoComplete());
+        mock.StartCall(&start_tag);
+        CHECK_FALSE(mock.call().startPending());
+
+        Response response;
+        mock.Read(&response, &read_tag);
+        CHECK(mock.call().readPending()); // no response to complete it with
+        mock.call().endReads();
+        mock.Finish(&status, &finish_tag);
+
+        CHECK(status.ok());
+        CHECK(mock.call().violations().empty());
+        CHECK(drainCompletions(cq, tag_names) == std::vector<std::string>{"finish: ok", "read: failed", "start: ok"});
+    }
+}
+
+TEST_CASE("Auto-completing mock leaves the operations recorded before the start-call pending", "[mocks]")
+{
+    grpc::CompletionQueue cq;
+    int                   tag = 0;
+    {
+        WriterMock mock(&cq, true);
+        mock.Write(makeRequest(1), &tag);
+        CHECK(mock.call().writePending()); // no completion queue to complete it on yet
+        CHECK(mock.call().violations().empty());
+    }
+    CHECK(drainCompletions(cq, {{&tag, "write"}}).empty());
+}
+
+TEST_CASE("Auto-completing bidirectional mock needs the test only to deliver and end the reads", "[mocks]")
+{
+    std::shared_ptr<BidiMock::Call> call;
+    ReadWriteStream                 stream;
+    std::vector<Response>           received;
+    auto handler = [&](Response&& response) { received.push_back(std::move(response)); };
+
+    REQUIRE(stream.open(makeMockStreamFactory<BidiMock>(true, [&](BidiMock& created) { call = created.sharedCall(); })));
+    REQUIRE(call != nullptr);
+
+    for (const std::uint64_t id : {1U, 2U, 3U})
+        stream.sendRequest(makeRequest(id));
+    REQUIRE(pollUntil(stream, handler, [&] { return stream.writeQueueStats().written_messages == 3; }, poll_timeout));
+
+    for (const std::uint64_t id : {10U, 11U})
+    {
+        REQUIRE(pollUntil(stream, handler, [&] { return call->readPending(); }, poll_timeout));
+        call->deliver(makeResponse(id));
+        REQUIRE(pollUntil(stream, handler, [&] { return received.size() == id - 9; }, poll_timeout));
+    }
+
+    REQUIRE(stream.writesDone());
+    REQUIRE(pollUntil(stream, handler, [&] { return stream.state() == StreamState::HalfClosed; }, poll_timeout));
+    REQUIRE(pollUntil(stream, handler, [&] { return call->readPending(); }, poll_timeout));
+    call->endReads();
+    REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
+
+    CHECK(stream.status().ok());
+    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
+    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{10, 11});
+    CHECK(call->violations().empty());
+}
+
+TEST_CASE("Auto-completing client-streaming mock runs the whole call on its own", "[mocks]")
+{
+    std::shared_ptr<WriterMock::Call> call;
+    WriteStream                       stream;
+
+    REQUIRE(stream.open(makeMockStreamFactory<WriterMock>(true, [&](WriterMock& created) { call = created.sharedCall(); })));
+    REQUIRE(call != nullptr);
+
+    for (const std::uint64_t id : {1U, 2U, 3U})
+        stream.sendRequest(makeRequest(id));
+    REQUIRE(stream.writesDone());
+    REQUIRE(pollUntilClosed(stream, poll_timeout));
+
+    CHECK(stream.status().ok());
+    CHECK(stream.writeQueueStats().written_messages == 3);
+    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
+    CHECK(call->writesDoneCalled());
+    CHECK(call->violations().empty());
+}
+
+TEST_CASE("Auto-completing server-streaming mock finishes the call once the test ends the reads", "[mocks]")
+{
+    std::shared_ptr<ReaderMock::Call> call;
+    ReadStream                        stream;
+    std::vector<Response>             received;
+    auto handler = [&](Response&& response) { received.push_back(std::move(response)); };
+
+    REQUIRE(stream.open(makeMockStreamFactory<ReaderMock>(true, [&](ReaderMock& created) { call = created.sharedCall(); })));
+    REQUIRE(call != nullptr);
+    CHECK_FALSE(call->startPending());
+
+    for (const std::uint64_t id : {100U, 101U})
+    {
+        REQUIRE(pollUntil(stream, handler, [&] { return call->readPending(); }, poll_timeout));
+        call->deliver(makeResponse(id));
+    }
+    REQUIRE(pollUntil(stream, handler, [&] { return received.size() == 2 && call->readPending(); }, poll_timeout));
+    call->endReads();
+    REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
+
+    CHECK(stream.status().ok());
+    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{100, 101});
     CHECK(call->violations().empty());
 }

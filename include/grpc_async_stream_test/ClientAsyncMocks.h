@@ -51,6 +51,16 @@
 // A derived mock overriding one Write() overload hides the other one: bring it
 // back with a using-declaration, as above.
 //
+// Auto-completion: constructed with auto_complete == true (the optional second
+// argument of the constructor, or of makeMockStreamFactory()), a mock completes
+// every operation it can complete on its own right after recording it: the
+// start-call and the writes succeed, the half-close succeeds and Finish returns
+// grpc::Status::OK, without the test calling call().completeStart(), ... The
+// reads are still completed by the queued responses, and the end of the reads
+// (call().endReads()) is still up to the test, as the server decides it. A
+// derived mock completing operations itself (like EchoMock above) keeps the
+// default, auto_complete == false, or completes them only when !autoComplete().
+//
 // Test-framework independent; requires only gRPC.
 
 #include <grpc_async_stream_test/FakeReaderWriter.h>
@@ -97,31 +107,63 @@ public:
     [[nodiscard]] const std::shared_ptr<Call>& sharedCall() const noexcept { return m_call; }
 
     [[nodiscard]] grpc::CompletionQueue* completionQueue() const noexcept { return m_cq; }
+    [[nodiscard]] bool                   autoComplete() const noexcept { return m_auto_complete; }
     [[nodiscard]] bool                   started() const noexcept { return m_start_call_calls > 0; }
     [[nodiscard]] int                    startCallCalls() const noexcept { return m_start_call_calls; }
     [[nodiscard]] int readInitialMetadataCalls() const noexcept { return m_read_initial_metadata_calls; }
 
 protected:
-    explicit ClientAsyncMockBase(grpc::CompletionQueue* cq)
+    ClientAsyncMockBase(grpc::CompletionQueue* cq, bool auto_complete)
         : m_cq(cq)
         , m_call(std::make_shared<Call>())
+        , m_auto_complete(auto_complete)
     {
     }
 
     // The stream is destroyed after its completion queue was drained
     ~ClientAsyncMockBase() { m_call->onDestroyed(); }
 
+    // The operations shared by the mocks: each records the operation with the
+    // FakeCall and, with auto-completion, completes it successfully at once
     void startCall(void* tag)
     {
         ++m_start_call_calls;
         m_call->onStartCall(m_cq, tag);
+        if (m_auto_complete)
+            m_call->completeStart();
+    }
+
+    void write(const W& msg, void* tag)
+    {
+        m_call->onWrite(msg, tag);
+        if (autoCompletes())
+            m_call->completeWrite();
+    }
+
+    void writesDone(void* tag)
+    {
+        m_call->onWritesDone(tag);
+        if (autoCompletes())
+            m_call->completeWritesDone();
+    }
+
+    void finish(grpc::Status* status, void* tag)
+    {
+        m_call->onFinish(status, tag);
+        if (autoCompletes())
+            m_call->completeFinish(grpc::Status::OK);
     }
 
     void recordReadInitialMetadata() noexcept { ++m_read_initial_metadata_calls; }
 
 private:
+    // An operation recorded before the start-call stays pending: the FakeCall
+    // gets the completion queue to complete it on from the start-call
+    [[nodiscard]] bool autoCompletes() const noexcept { return m_auto_complete && started(); }
+
     grpc::CompletionQueue* m_cq;
     std::shared_ptr<Call>  m_call;
+    bool                   m_auto_complete;
     int                    m_start_call_calls            = 0;
     int                    m_read_initial_metadata_calls = 0;
 };
@@ -171,8 +213,9 @@ public:
     using Interface = grpc::ClientAsyncReaderWriterInterface<W, R>;
     using Call      = FakeCall<W, R>;
 
-    explicit ClientAsyncReaderWriterMock(grpc::CompletionQueue* cq)
-        : detail::ClientAsyncReadingMockBase<W, R>(cq)
+    // With auto_complete, the mock completes its operations itself (see above)
+    explicit ClientAsyncReaderWriterMock(grpc::CompletionQueue* cq, bool auto_complete = false)
+        : detail::ClientAsyncReadingMockBase<W, R>(cq, auto_complete)
     {
     }
 
@@ -182,10 +225,10 @@ public:
         this->deliverQueuedResponse();
     }
     void ReadInitialMetadata(void* /*tag*/) override { this->recordReadInitialMetadata(); }
-    void Finish(grpc::Status* status, void* tag) override { this->call().onFinish(status, tag); }
-    void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
-    void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
-    void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+    void Finish(grpc::Status* status, void* tag) override { this->finish(status, tag); }
+    void WritesDone(void* tag) override { this->writesDone(tag); }
+    void Write(const W& msg, void* tag) override { this->write(msg, tag); }
+    void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->write(msg, tag); }
 
     // The requests passed to Write() so far, in order (also available through
     // call().writes(), which outlives the mock when kept with sharedCall())
@@ -223,17 +266,18 @@ public:
     using Interface = grpc::ClientAsyncWriterInterface<W>;
     using Call      = FakeCall<W, detail::NoMessage>;
 
-    explicit ClientAsyncWriterMock(grpc::CompletionQueue* cq)
-        : detail::ClientAsyncMockBase<W, detail::NoMessage>(cq)
+    // With auto_complete, the mock completes its operations itself (see above)
+    explicit ClientAsyncWriterMock(grpc::CompletionQueue* cq, bool auto_complete = false)
+        : detail::ClientAsyncMockBase<W, detail::NoMessage>(cq, auto_complete)
     {
     }
 
     void StartCall(void* tag) override { this->startCall(tag); }
     void ReadInitialMetadata(void* /*tag*/) override { this->recordReadInitialMetadata(); }
-    void Finish(grpc::Status* status, void* tag) override { this->call().onFinish(status, tag); }
-    void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
-    void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
-    void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+    void Finish(grpc::Status* status, void* tag) override { this->finish(status, tag); }
+    void WritesDone(void* tag) override { this->writesDone(tag); }
+    void Write(const W& msg, void* tag) override { this->write(msg, tag); }
+    void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->write(msg, tag); }
 
     // The requests passed to Write() so far, in order (also available through
     // call().writes(), which outlives the mock when kept with sharedCall())
@@ -265,8 +309,9 @@ public:
     using Interface = grpc::ClientAsyncReaderInterface<R>;
     using Call      = FakeCall<detail::NoMessage, R>;
 
-    explicit ClientAsyncReaderMock(grpc::CompletionQueue* cq)
-        : detail::ClientAsyncReadingMockBase<detail::NoMessage, R>(cq)
+    // With auto_complete, the mock completes its operations itself (see above)
+    explicit ClientAsyncReaderMock(grpc::CompletionQueue* cq, bool auto_complete = false)
+        : detail::ClientAsyncReadingMockBase<detail::NoMessage, R>(cq, auto_complete)
     {
     }
 
@@ -276,7 +321,7 @@ public:
         this->deliverQueuedResponse();
     }
     void ReadInitialMetadata(void* /*tag*/) override { this->recordReadInitialMetadata(); }
-    void Finish(grpc::Status* status, void* tag) override { this->call().onFinish(status, tag); }
+    void Finish(grpc::Status* status, void* tag) override { this->finish(status, tag); }
     void Read(R* msg, void* tag) override
     {
         this->call().onRead(msg, tag);
@@ -291,6 +336,25 @@ concept ClientAsyncMock = std::derived_from<Mock, typename Mock::Interface> &&
                           std::same_as<std::remove_cvref_t<decltype(std::declval<const Mock&>().call())>,
                                        typename Mock::Call>;
 
+namespace detail
+{
+
+// Stream factory creating the mocks with `make_mock(cq)`
+template<typename Mock, typename MakeMock, typename OnCreated>
+auto makeMockStreamFactory(MakeMock make_mock, OnCreated on_created)
+{
+    return [make_mock = std::move(make_mock), on_created = std::move(on_created)](
+               grpc::ClientContext* /*context*/, grpc::CompletionQueue* cq,
+               void* tag) mutable -> std::unique_ptr<typename Mock::Interface> {
+        std::unique_ptr<Mock> stream = make_mock(cq);
+        stream->StartCall(tag);
+        on_created(*stream);
+        return stream;
+    };
+}
+
+} // namespace detail
+
 // Stream factory for the open() of AsyncReadWriteStream, AsyncWriteStream or
 // AsyncReadStream (depending on Mock::Interface). Like a generated Async* stub
 // method, every call creates a Mock on the stream's completion queue and
@@ -300,13 +364,19 @@ template<ClientAsyncMock Mock, typename OnCreated = void (*)(Mock&)>
     requires std::invocable<OnCreated&, Mock&>
 auto makeMockStreamFactory(OnCreated on_created = [](Mock&) {})
 {
-    return [on_created = std::move(on_created)](grpc::ClientContext* /*context*/, grpc::CompletionQueue* cq,
-                                                void* tag) mutable -> std::unique_ptr<typename Mock::Interface> {
-        auto stream = std::make_unique<Mock>(cq);
-        stream->StartCall(tag);
-        on_created(*stream);
-        return stream;
-    };
+    return detail::makeMockStreamFactory<Mock>([](grpc::CompletionQueue* cq) { return std::make_unique<Mock>(cq); },
+                                               std::move(on_created));
+}
+
+// Same, creating every Mock with Mock(cq, auto_complete): with auto_complete,
+// the mocks complete their operations themselves (see above)
+template<ClientAsyncMock Mock, typename OnCreated = void (*)(Mock&)>
+    requires std::constructible_from<Mock, grpc::CompletionQueue*, bool> && std::invocable<OnCreated&, Mock&>
+auto makeMockStreamFactory(bool auto_complete, OnCreated on_created = [](Mock&) {})
+{
+    return detail::makeMockStreamFactory<Mock>(
+        [auto_complete](grpc::CompletionQueue* cq) { return std::make_unique<Mock>(cq, auto_complete); },
+        std::move(on_created));
 }
 
 } // namespace grpc_async_stream_test
