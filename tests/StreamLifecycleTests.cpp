@@ -211,6 +211,27 @@ TEST_CASE("poll() without events returns immediately and keeps the stream open",
     CHECK(f.responses.empty());
 }
 
+TEST_CASE("pollFor() processes one event per call by default", "[lifecycle]")
+{
+    FakeStreamFixture f;
+    f.openStarted();
+    CHECK(f.stream.sendRequest(makeEcho(1)) == SendResult::Written);
+
+    // Two completions at once: the write and a response
+    f.call->completeWrite();
+    f.call->deliver(makeResponse(42));
+    auto processed = [&] { return f.responses.size() + f.stream.writeQueueStats().written_messages; };
+
+    // Each call waits for one event (both are posted, the waits end at once)
+    REQUIRE(f.stream.pollFor(f.handler, std::chrono::seconds(5)));
+    CHECK(processed() == 1);
+    REQUIRE(f.stream.pollFor(f.handler, std::chrono::seconds(5)));
+    CHECK(processed() == 2);
+    CHECK(idsOf(f.responses) == std::vector<std::uint64_t>{42});
+    CHECK(f.call->readPending());
+    f.checkNoViolations();
+}
+
 TEST_CASE("writesDone() flushes the queued requests before half-closing", "[lifecycle]")
 {
     FakeStreamFixture f;

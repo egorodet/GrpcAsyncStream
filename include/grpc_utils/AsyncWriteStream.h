@@ -13,8 +13,9 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <limits>
+#include <memory>
+#include <type_traits>
 #include <utility>
 
 namespace grpc_utils
@@ -40,8 +41,9 @@ enum class WriteOverflowPolicy
 // faster than the network (or a slow / stalled server) grows the queue without
 // bound until memory is exhausted. The queue is bounded both by the number of
 // messages and by their total serialized size; whichever limit is hit first
-// triggers the overflow policy. The single request currently being written is
-// not part of the queue, so at most `max_messages + 1` requests are held.
+// triggers the overflow policy. The request currently being written is not
+// part of the queue: gRPC serializes it within Write(), and the stream keeps
+// no copy of it, so the stream holds at most `max_messages` requests.
 //
 // Configure with designated initializers, e.g.
 //   WriteQueueLimits{.max_messages = 256, .overflow_policy = WriteOverflowPolicy::DropNewest}
@@ -105,6 +107,151 @@ enum class SendResult
     using enum SendResult;
     return result == Written || result == Queued || result == QueuedDroppedOldest;
 }
+
+namespace detail
+{
+
+// FIFO queue on a ring buffer whose capacity is a power of two and grows by
+// doubling. Unlike std::deque it does not allocate per element (MSVC's deque
+// allocates one block per element larger than 8 bytes), so pushing and popping
+// in steady state allocate nothing.
+//
+// The storage is raw memory: an element is constructed in its slot when pushed
+// and destroyed when popped or dropped. Free slots therefore hold no objects
+// (and no memory of the messages popped from them), growing moves only the
+// live elements, and no empty elements are constructed. release() destroys the
+// elements and frees the storage.
+//
+// The arguments of emplaceBack() / pushBack() must not refer to an element of
+// the queue itself, since growing moves the elements.
+template<typename T>
+    requires std::move_constructible<T> && std::is_nothrow_destructible_v<T>
+class RingQueue
+{
+public:
+    RingQueue() = default;
+    ~RingQueue() { release(); }
+
+    RingQueue(const RingQueue&)            = delete;
+    RingQueue& operator=(const RingQueue&) = delete;
+    RingQueue(RingQueue&&)                 = delete;
+    RingQueue& operator=(RingQueue&&)      = delete;
+
+    [[nodiscard]] bool        empty() const noexcept { return m_size == 0; }
+    [[nodiscard]] std::size_t size() const noexcept { return m_size; }
+    [[nodiscard]] std::size_t capacity() const noexcept { return m_capacity; }
+
+    // The oldest and the newest element; the queue must not be empty
+    [[nodiscard]] T& front() noexcept { return m_slots[m_head]; }
+    [[nodiscard]] T& back() noexcept { return m_slots[slot(m_size - 1)]; }
+
+    // Constructs a new newest element in place. If the construction throws,
+    // the queue keeps its elements (its capacity may have grown).
+    template<typename... Args>
+        requires std::constructible_from<T, Args...>
+    T& emplaceBack(Args&&... args)
+    {
+        if (m_size == m_capacity)
+            grow();
+        T& element = *std::construct_at(m_slots + slot(m_size), std::forward<Args>(args)...);
+        ++m_size;
+        return element;
+    }
+
+    void pushBack(T&& value) { emplaceBack(std::move(value)); }
+
+    // Remove the oldest / the newest element and return it
+    T popFront()
+    {
+        T value = std::move(front());
+        dropFront();
+        return value;
+    }
+
+    T popBack()
+    {
+        T value = std::move(back());
+        dropBack();
+        return value;
+    }
+
+    // Destroy the oldest / the newest element in place, without moving it out
+    void dropFront() noexcept
+    {
+        std::destroy_at(m_slots + m_head);
+        m_head = slot(1);
+        --m_size;
+    }
+
+    void dropBack() noexcept
+    {
+        std::destroy_at(m_slots + slot(m_size - 1));
+        --m_size;
+    }
+
+    // Destroys all elements and frees the storage.
+    void release() noexcept
+    {
+        destroyAll();
+        if (m_slots)
+            std::allocator<T>().deallocate(m_slots, m_capacity);
+        m_slots    = nullptr;
+        m_capacity = 0;
+        m_head     = 0;
+    }
+
+private:
+    static constexpr std::size_t initial_capacity = 16;
+
+    [[nodiscard]] std::size_t slot(std::size_t offset) const noexcept { return (m_head + offset) & (m_capacity - 1); }
+
+    void destroyAll() noexcept
+    {
+        while (m_size > 0)
+            dropFront();
+    }
+
+    void grow()
+    {
+        // Frees the new storage if moving (or copying) an element throws, in
+        // which case the queue keeps its elements in the old storage
+        struct NewStorage
+        {
+            T*          slots       = nullptr;
+            std::size_t capacity    = 0;
+            std::size_t constructed = 0;
+
+            ~NewStorage()
+            {
+                if (!slots)
+                    return;
+                std::destroy_n(slots, constructed);
+                std::allocator<T>().deallocate(slots, capacity);
+            }
+        };
+
+        const std::size_t new_capacity = m_capacity == 0 ? initial_capacity : m_capacity * 2;
+        NewStorage        storage{.slots = std::allocator<T>().allocate(new_capacity), .capacity = new_capacity};
+        for (; storage.constructed < m_size; ++storage.constructed)
+            std::construct_at(storage.slots + storage.constructed,
+                              std::move_if_noexcept(m_slots[slot(storage.constructed)]));
+        T* const new_slots = std::exchange(storage.slots, nullptr);
+
+        // The old slots hold moved-from elements, destroyed before freeing them
+        const std::size_t count = m_size;
+        release();
+        m_slots    = new_slots;
+        m_capacity = new_capacity;
+        m_size     = count;
+    }
+
+    T*          m_slots    = nullptr;
+    std::size_t m_capacity = 0;
+    std::size_t m_head     = 0;
+    std::size_t m_size     = 0;
+};
+
+} // namespace detail
 
 // The write side of an asynchronous client stream: satisfied by
 // grpc::ClientAsyncWriterInterface<Request> (client-streaming calls) and
@@ -199,7 +346,6 @@ public:
             ++m_stats.discarded_messages;
             m_stats.write_in_flight = false;
         }
-        m_current_write.Clear();
     }
 
     // True while new requests may be sent.
@@ -235,20 +381,13 @@ public:
     // and sent as the completions arrive in poll(). Requests not fitting into
     // the queue are discarded according to the overflow policy, so memory use
     // stays bounded however fast requests are produced.
-    SendResult sendRequest(RequestProto request)
-    {
-        if (this->state() != State::Open)
-            return SendResult::NotWritable;
-
-        ++m_stats.submitted_messages;
-        if (!isWriteInProgress()) [[likely]]
-        {
-            startWrite(std::move(request));
-            return SendResult::Written;
-        }
-
-        return enqueue(std::move(request));
-    }
+    //
+    // gRPC serializes a request within Write() and keeps no reference to it, so
+    // a request written immediately is neither copied nor moved: the stream
+    // only takes a request (copying an lvalue, moving an rvalue) when it has to
+    // be queued. A request dropped by the overflow policy is never copied.
+    SendResult sendRequest(const RequestProto& request) { return submit(request); }
+    SendResult sendRequest(RequestProto&& request) { return submit(std::move(request)); }
 
     // Half-closes the stream from the client side: already queued requests are
     // still sent, then WritesDone is issued. A write-only stream then requests
@@ -267,17 +406,21 @@ public:
 
     // Non-blocking processing of up to max_events currently available stream
     // events. Returns false once the call has ended (status() then holds the
-    // reason), true otherwise.
+    // reason), true otherwise. Returns at once while no operation is
+    // outstanding (an idle stream).
     bool poll(std::size_t max_events = 64)
     {
         return this->processEvents(eventHandler(), max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
     }
 
-    // Like poll(), but waits up to `timeout` for the first event, which avoids
-    // busy polling in a dedicated stream thread. Further already available
-    // events are processed without waiting.
+    // Waits up to `timeout` for the next event and processes it, which avoids
+    // busy polling in a dedicated stream thread; returns like poll(). With
+    // max_events > 1, further events already available are processed in the
+    // same call, but finding out that none is left can delay the return (see
+    // AsyncReadStream::pollFor()), so by default the loop calling pollFor()
+    // takes them: the next call returns at once with an available event.
     template<typename Rep, typename Period>
-    bool pollFor(std::chrono::duration<Rep, Period> timeout, std::size_t max_events = 64)
+    bool pollFor(std::chrono::duration<Rep, Period> timeout, std::size_t max_events = 1)
     {
         return this->processEvents(eventHandler(), max_events, Base::deadlineAfter(timeout));
     }
@@ -318,8 +461,6 @@ protected:
                 break;
             }
             ++m_stats.written_messages;
-            // The written message is no longer needed by gRPC: free its memory now
-            m_current_write.Clear();
             onWriteSlotFree();
             break;
 
@@ -352,8 +493,15 @@ protected:
 private:
     struct PendingWrite
     {
+        template<typename Message>
+        PendingWrite(Message&& message, std::size_t size)
+            : request(std::forward<Message>(message))
+            , bytes(size)
+        {
+        }
+
         RequestProto request;
-        std::size_t  bytes;
+        std::size_t  bytes = 0;
     };
 
     auto eventHandler()
@@ -364,7 +512,26 @@ private:
         };
     }
 
-    SendResult enqueue(RequestProto request)
+    template<typename Message>
+    SendResult submit(Message&& request)
+    {
+        if (this->state() != State::Open)
+            return SendResult::NotWritable;
+
+        ++m_stats.submitted_messages;
+        if (!isWriteInProgress()) [[likely]]
+        {
+            startWrite(request);
+            return SendResult::Written;
+        }
+
+        return enqueue(std::forward<Message>(request));
+    }
+
+    // Queues a copy of an lvalue request, or moves an rvalue one, directly into
+    // its slot of the queue; a dropped request is not copied.
+    template<typename Message>
+    SendResult enqueue(Message&& request)
     {
         const std::size_t bytes = request.ByteSizeLong();
 
@@ -382,7 +549,7 @@ private:
             dropped_oldest = true;
         }
 
-        m_pending_writes.push_back({.request = std::move(request), .bytes = bytes});
+        m_pending_writes.emplaceBack(std::forward<Message>(request), bytes);
         ++m_stats.queued_messages;
         m_stats.queued_bytes += bytes;
         m_stats.peak_queued_messages = std::max(m_stats.peak_queued_messages, m_stats.queued_messages);
@@ -408,30 +575,30 @@ private:
     void dropPendingFront()
     {
         dropRequest(m_pending_writes.front().bytes);
-        popPendingFront();
+        removePendingFront();
     }
 
     void dropPendingBack()
     {
         const std::size_t bytes = m_pending_writes.back().bytes;
         dropRequest(bytes);
+        m_pending_writes.dropBack();
         --m_stats.queued_messages;
         m_stats.queued_bytes -= bytes;
-        m_pending_writes.pop_back();
         shrinkQueueIfEmpty();
     }
 
-    RequestProto popPendingFront()
+    // Destroys the oldest queued request in place, which frees its memory
+    void removePendingFront()
     {
-        PendingWrite pending = std::move(m_pending_writes.front());
-        m_pending_writes.pop_front();
+        const std::size_t bytes = m_pending_writes.front().bytes;
+        m_pending_writes.dropFront();
         --m_stats.queued_messages;
-        m_stats.queued_bytes -= pending.bytes;
+        m_stats.queued_bytes -= bytes;
         shrinkQueueIfEmpty();
-        return std::move(pending.request);
     }
 
-    // std::deque keeps its spare blocks after being drained; release them once
+    // The ring buffer keeps its capacity after being drained; release it once
     // a load peak is over so that the memory footprint returns to the baseline.
     // Small fluctuations of the queue are ignored to avoid reallocation churn.
     void shrinkQueueIfEmpty()
@@ -439,7 +606,7 @@ private:
         static constexpr std::size_t shrink_threshold = 256;
         if (m_pending_writes.empty() && m_queue_peak_since_shrink > shrink_threshold)
         {
-            std::deque<PendingWrite>().swap(m_pending_writes);
+            m_pending_writes.release();
             m_queue_peak_since_shrink = 0;
         }
     }
@@ -450,14 +617,15 @@ private:
         m_stats.queued_messages   = 0;
         m_stats.queued_bytes      = 0;
         m_queue_peak_since_shrink = 0;
-        std::deque<PendingWrite>().swap(m_pending_writes);
+        m_pending_writes.release();
     }
 
-    void startWrite(RequestProto request)
+    // gRPC serializes the request within Write() and keeps no reference to it
+    // ("safe to deallocate once Write returns", see AsyncWriterInterface), so
+    // the request need not outlive this call.
+    void startWrite(const RequestProto& request)
     {
-        // The message is kept alive in a member until the write completes
-        m_current_write = std::move(request);
-        this->stream()->Write(m_current_write, Base::toTag(Tag::Write));
+        this->stream()->Write(request, Base::toTag(Tag::Write));
         this->setWriteOperationPending(true);
         m_stats.write_in_flight = true;
     }
@@ -474,18 +642,21 @@ private:
     void onWriteSlotFree()
     {
         if (!m_pending_writes.empty())
-            startWrite(popPendingFront());
+        {
+            // Written straight from its slot, which is destroyed right after
+            startWrite(m_pending_writes.front().request);
+            removePendingFront();
+        }
         else if (this->state() == State::HalfClosing)
             startWritesDone();
         else
             this->tryFinish();
     }
 
-    RequestProto             m_current_write;
-    std::deque<PendingWrite> m_pending_writes;
-    WriteQueueLimits         m_limits;
-    WriteQueueStats          m_stats;
-    std::size_t              m_queue_peak_since_shrink = 0;
+    detail::RingQueue<PendingWrite> m_pending_writes;
+    WriteQueueLimits                m_limits;
+    WriteQueueStats                 m_stats;
+    std::size_t                     m_queue_peak_since_shrink = 0;
 };
 
 } // namespace grpc_utils

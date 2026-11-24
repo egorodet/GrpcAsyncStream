@@ -16,6 +16,7 @@
 #include <array>
 #include <functional>
 #include <ranges>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,62 @@ struct QueueFixture
         }
         return idsOf(call->writes());
     }
+};
+
+// Element of the ring buffer tests counting its live instances
+struct CountedElement
+{
+    static inline int live = 0;
+
+    explicit CountedElement(int element_value)
+        : value(element_value)
+    {
+        ++live;
+    }
+    CountedElement(CountedElement&& other) noexcept
+        : value(other.value)
+    {
+        ++live;
+    }
+    CountedElement(const CountedElement&)            = delete;
+    CountedElement& operator=(const CountedElement&) = delete;
+    CountedElement& operator=(CountedElement&&)      = delete;
+    ~CountedElement() { --live; }
+
+    int value;
+};
+
+// Element whose move may throw, so the ring buffer copies it when growing;
+// the copy throws after the configured number of successful copies
+struct ThrowingCopyElement
+{
+    static inline int live                  = 0;
+    static inline int copies_before_failure = -1; // negative: never fail
+
+    explicit ThrowingCopyElement(int element_value)
+        : value(element_value)
+    {
+        ++live;
+    }
+    ThrowingCopyElement(const ThrowingCopyElement& other)
+        : value(other.value)
+    {
+        if (copies_before_failure == 0)
+            throw std::runtime_error("copy failed");
+        if (copies_before_failure > 0)
+            --copies_before_failure;
+        ++live;
+    }
+    ThrowingCopyElement(ThrowingCopyElement&& other) // deliberately not noexcept
+        : value(other.value)
+    {
+        ++live;
+    }
+    ThrowingCopyElement& operator=(const ThrowingCopyElement&) = delete;
+    ThrowingCopyElement& operator=(ThrowingCopyElement&&)      = delete;
+    ~ThrowingCopyElement() { --live; }
+
+    int value;
 };
 
 } // namespace
@@ -384,6 +441,157 @@ TEST_CASE("Requests sent while the queue drains are accepted again", "[write-que
 
     f.call->completeWrite();
     CHECK(f.drain() == std::vector<std::uint64_t>{1, 2, 3, 5});
+    checkInvariant(f.stream.writeQueueStats());
+    CHECK(f.call->violations().empty());
+}
+
+TEST_CASE("The ring buffer of the write queue keeps FIFO order across wrap-around and growth", "[write-queue]")
+{
+    grpc_utils::detail::RingQueue<std::string> queue;
+    std::uint64_t                              next_in  = 0;
+    std::uint64_t                              next_out = 0;
+
+    // Move the head forward so that the contents wrap around the end of the
+    // storage, then grow while wrapped (16 -> 32 -> 64 slots)
+    for (int i = 0; i < 10; ++i)
+        queue.pushBack(std::to_string(next_in++));
+    for (int i = 0; i < 7; ++i)
+        CHECK(queue.popFront() == std::to_string(next_out++));
+    for (int i = 0; i < 50; ++i)
+        queue.pushBack(std::to_string(next_in++));
+    CHECK(queue.size() == next_in - next_out);
+
+    // popBack takes the newest element, front() is the oldest one
+    CHECK(queue.popBack() == std::to_string(--next_in));
+    CHECK(queue.front() == std::to_string(next_out));
+    while (!queue.empty())
+        CHECK(queue.popFront() == std::to_string(next_out++));
+    CHECK(next_out == next_in);
+
+    // Usable again after releasing the storage
+    queue.pushBack("a");
+    queue.release();
+    CHECK(queue.empty());
+    queue.pushBack("b");
+    CHECK(queue.popFront() == "b");
+}
+
+TEST_CASE("Queued requests are written in order when the queue wraps around and grows", "[write-queue]")
+{
+    QueueFixture f(WriteQueueLimits::unbounded());
+    std::uint64_t id = 0;
+    for (; id < 10; ++id)
+        REQUIRE(isAccepted(f.stream.sendRequest(makeEcho(id))));
+
+    // Write a few, so that the queue's head moves forward
+    f.call->completeStart();
+    for (std::size_t written = 1; written <= 6; ++written)
+    {
+        REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.call->writePending(); }));
+        f.call->completeWrite();
+        REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.stream.writeQueueStats().written_messages == written; }));
+    }
+
+    // 3 requests are left in the queue: the next ones wrap around and grow it while wrapped
+    for (; id < 40; ++id)
+        REQUIRE(isAccepted(f.stream.sendRequest(makeEcho(id))));
+
+    const auto ids = f.drain();
+    REQUIRE(ids.size() == 40);
+    for (std::uint64_t i = 0; i < ids.size(); ++i)
+        CHECK(ids[i] == i);
+    checkInvariant(f.stream.writeQueueStats());
+    CHECK(f.call->violations().empty());
+}
+
+TEST_CASE("The ring buffer destroys elements as soon as they leave the queue", "[write-queue]")
+{
+    CountedElement::live = 0;
+    {
+        grpc_utils::detail::RingQueue<CountedElement> queue;
+        for (int i = 0; i < 12; ++i)
+            queue.emplaceBack(i);
+        for (int i = 0; i < 9; ++i)
+            queue.dropFront();
+        CHECK(CountedElement::live == 3);
+
+        // Wrap around the end of the storage and grow twice while wrapped:
+        // growing leaves no moved-from elements behind
+        for (int i = 12; i < 60; ++i)
+            queue.emplaceBack(i);
+        CHECK(queue.size() == 51);
+        CHECK(queue.capacity() == 64);
+        CHECK(CountedElement::live == 51);
+        CHECK(queue.front().value == 9);
+        CHECK(queue.back().value == 59);
+
+        queue.dropBack();
+        CHECK(queue.back().value == 58);
+        CHECK(CountedElement::live == 50);
+
+        const CountedElement oldest = queue.popFront();
+        CHECK(oldest.value == 9);
+        CHECK(CountedElement::live == 50);
+
+        queue.release();
+        CHECK(queue.empty());
+        CHECK(queue.capacity() == 0);
+        CHECK(CountedElement::live == 1);
+    }
+    CHECK(CountedElement::live == 0);
+}
+
+TEST_CASE("The ring buffer keeps its elements when copying them while growing throws", "[write-queue]")
+{
+    ThrowingCopyElement::live = 0;
+    {
+        grpc_utils::detail::RingQueue<ThrowingCopyElement> queue;
+        for (int i = 0; i < 16; ++i)
+            queue.emplaceBack(i);
+
+        ThrowingCopyElement::copies_before_failure = 5;
+        CHECK_THROWS_AS(queue.emplaceBack(16), std::runtime_error);
+        ThrowingCopyElement::copies_before_failure = -1;
+        CHECK(queue.size() == 16);
+        CHECK(queue.capacity() == 16);
+        CHECK(ThrowingCopyElement::live == 16);
+
+        queue.emplaceBack(16);
+        for (int i = 0; i <= 16; ++i)
+            CHECK(queue.popFront().value == i);
+    }
+    CHECK(ThrowingCopyElement::live == 0);
+}
+
+TEST_CASE("sendRequest() copies an lvalue request only when it has to be queued", "[write-queue]")
+{
+    QueueFixture f(limits(1, unlimited, WriteOverflowPolicy::DropNewest));
+    Request      request = makeEcho(1, "first");
+
+    // Queued while the start-call is pending: the queue holds its own copy
+    CHECK(f.stream.sendRequest(request) == SendResult::Queued);
+    request.set_payload("changed after queueing");
+
+    // Dropped, the queue being full: the caller's request is left as it is
+    CHECK(f.stream.sendRequest(request) == SendResult::Dropped);
+    CHECK(request.payload() == "changed after queueing");
+
+    f.call->completeStart();
+    REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.call->writePending(); }));
+    f.call->completeWrite();
+    REQUIRE(pollUntil(f.stream, f.handler, [&] { return f.stream.writeQueueStats().written_messages == 1; }));
+
+    // Written at once, straight from the caller's request, which is left as it is
+    request.set_id(2);
+    CHECK(f.stream.sendRequest(request) == SendResult::Written);
+    CHECK(request.id() == 2);
+    CHECK(request.payload() == "changed after queueing");
+
+    REQUIRE(f.call->writes().size() == 2);
+    CHECK(f.call->writes()[0].id() == 1);
+    CHECK(f.call->writes()[0].payload() == "first");
+    CHECK(f.call->writes()[1].id() == 2);
+    CHECK(f.call->writes()[1].payload() == "changed after queueing");
     checkInvariant(f.stream.writeQueueStats());
     CHECK(f.call->violations().empty());
 }

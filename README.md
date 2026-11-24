@@ -109,8 +109,9 @@ while (prices.poll([&](PriceUpdate&& update) { apply(update); })) { // never blo
   enum-reflection library can name them; the test utilities use
   [magic_enum](https://github.com/Neargye/magic_enum) for that.
 - **Cross-platform**: Linux (GCC, Clang), macOS (Apple Clang) and Windows (MSVC), built and tested in CI.
-- **Non-blocking**: `sendRequest()` and `poll()` never block; `pollFor()` optionally waits for the
-  first event so a dedicated stream thread does not have to spin.
+- **Non-blocking**: `sendRequest()` never blocks and `poll()` never waits for new events; `pollFor()`
+  waits for the next event so a dedicated stream thread does not have to spin, and returns as soon as
+  it has processed it (see [Polling](#polling)).
 - **Correct gRPC async usage**: at most one outstanding write, no write before the start-call has
   completed, exactly one outstanding read for the whole call, `Finish` issued exactly once after all
   other operations completed, and the completion queue drained before anything it references is
@@ -149,7 +150,8 @@ classDiagram
     }
     class AsyncWriteStream~Req, Base~ {
         +open(factory) bool
-        +sendRequest(Req) SendResult
+        +sendRequest(const Req&) SendResult
+        +sendRequest(Req&&) SendResult
         +writesDone() bool
         +poll(max_events) bool
         +pollFor(timeout, max_events) bool
@@ -158,8 +160,7 @@ classDiagram
         +writeQueueStats() WriteQueueStats
         #handleEvent(tag, ok, context)
         #enterFinishing()
-        -deque~PendingWrite~ pending_writes
-        -Req current_write
+        -RingQueue~PendingWrite~ pending_writes
     }
     class AsyncReadStream~Resp, Base~ {
         +open(factory) bool
@@ -168,6 +169,7 @@ classDiagram
         +close()
         #handleEvent(tag, ok, handler)
         -Resp pending_response
+        -Resp spare_response
     }
     class AsyncReadWriteStream~Req, Resp~ {
         +getReaderWriter() ClientAsyncReaderWriterInterface*
@@ -263,6 +265,28 @@ the thread that owns the protocol logic, or a dedicated stream thread looping on
 This keeps the implementation lock-free and makes the handler re-entrancy rules simple: the response
 handler runs inside `poll()` and may call `sendRequest()`, `writesDone()` or `close()`.
 
+### Polling
+
+`pollFor(timeout)` waits up to `timeout` for the next event of the call and processes it. The loop around
+it takes the following events: a further call returns at once while an event is already available, and
+otherwise waits for the next one. Each stream has its own completion queue with at most one read and one
+write outstanding, so only a few events can ever be waiting at the same time. This is the lowest-latency
+way to drive a stream: `pollFor()` returns as soon as the event is handled, and the loop can react to it
+right away, for example by sending the next request.
+
+`poll()` processes up to `max_events` events that are already available and does not wait for new ones.
+Finding out that no event is available is not always instant, though. When another thread of the process
+polls a gRPC completion queue (a gRPC server, or the thread of another stream), gRPC waits on a condition
+variable even for an expired deadline, and Linux extends that zero-timeout wait by the thread's *timer
+slack*, 50 µs by default. A `poll()` with nothing to process then takes about 50 µs (see the `[poll]`
+benchmark). The final check of every `poll()` can take as long unless another event arrives meanwhile,
+and so can that of a `pollFor()` given `max_events > 1`, which processes the further available events in
+the same call. A stream with no operation outstanding (an idle `AsyncWriteStream`) skips the check, since
+no event can arrive. A thread that has to use `poll()` and is sensitive to these 50 µs can lower its
+timer slack with `prctl(PR_SET_TIMERSLACK, 1)`, which shortened the check to about 10 µs on the
+benchmark machine; [docs/Optimizations.md](docs/Optimizations.md#third-round-polling-without-stalls) has
+the details.
+
 ---
 
 ## Data flow
@@ -304,12 +328,19 @@ goes into the bounded queue. The write slot is busy from `open()` until the star
 (the initial metadata shares gRPC's internal write operation set, and a premature `Write` would fail
 with `GRPC_CALL_ERROR_TOO_MANY_OPERATIONS`), during every `Write`, and during `WritesDone`.
 Whenever a write completes successfully, the next queued request is written, or the pending
-half-close is issued, or `Finish` is attempted when the call is ending. The message being written
-is kept alive in a member until its completion, then cleared to release its memory.
+half-close is issued, or `Finish` is attempted when the call is ending. gRPC serializes a request
+within `Write()` and keeps no reference to it, so the stream keeps no copy of the request being
+written: a request sent while the write slot is free is written straight from the caller's object,
+without being copied or moved, and a queued request is written straight from its queue slot, which
+is destroyed right after. The stream takes a request (copying an lvalue, moving an rvalue) only when it
+has to queue it; a request that is dropped is never copied.
 
 **Read path.** Exactly one `Read` is outstanding for the whole call. On completion the message is
 moved out of the read buffer, the next `Read` is armed, and only then is the handler invoked, so the
-handler may keep the message and may call back into the stream.
+handler may keep the message and may call back into the stream. The next `Read` goes into a spare
+buffer holding the cleared message of the previous response: a handler that does not take the message
+saves gRPC from reallocating its string, bytes and repeated fields for every response. At most one such
+spare message is kept while the call is open; `close()` releases both buffers.
 
 **End of call.** A failed read means the server ended the stream (or the call broke). The stream
 stops accepting writes, discards queued requests and calls `Finish` once no write is outstanding;
@@ -346,8 +377,10 @@ changed at any time with `setWriteQueueLimits()`; tightening them immediately tr
 the configured policy. `WriteQueueLimits::unbounded()` restores unlimited buffering.
 
 **Memory guarantee.** The memory held by the stream for outgoing requests is at most
-`max_bytes` (queued requests, serialized-size measure) plus the one request in flight, plus the
-per-entry container overhead for at most `max_messages` entries. The deque's spare blocks are released
+`max_bytes` (queued requests, serialized-size measure) plus the per-entry container overhead for at
+most `max_messages` entries. The request being written is held by gRPC in serialized form, not by the
+stream. The queue is a ring buffer that grows by doubling and allocates nothing per request; a request
+is destroyed, and its memory freed, as soon as it leaves the queue, and the queue's storage is released
 again once a load peak (more than 256 queued requests) is over.
 
 > `ByteSizeLong()` is the serialized size; the in-memory size of a protobuf message is somewhat larger
@@ -383,7 +416,7 @@ statistics as `AsyncReadWriteStream` (see its table below), without reads.
 | Member | Description |
 |---|---|
 | `template<F> bool open(F&& factory)` | Like `AsyncReadWriteStream::open()`, but the factory returns `std::unique_ptr<ClientAsyncWriterInterface<Req>>`, e.g. `stub->AsyncUpload(ctx, &response, cq, tag)`. The `response` message passed to the stub must outlive the call (until `poll()` returns `false`, or `close()`, `open()` or the destructor returns); it holds the server response once the call has ended with an `OK` status. |
-| `bool poll(size_t max_events = 64)` / `template<Rep, Period> bool pollFor(duration timeout, size_t max_events = 64)` | Process the completions of the start-call, writes, half-close and `Finish`, without and with waiting. Return `false` once the call has ended. |
+| `bool poll(size_t max_events = 64)` / `template<Rep, Period> bool pollFor(duration timeout, size_t max_events = 1)` | Process the completions of the start-call, writes, half-close and `Finish`: `poll()` those already available, `pollFor()` the next one, waiting for it (see [Polling](#polling)). `poll()` returns at once while no operation is outstanding. Return `false` once the call has ended. |
 | `bool writesDone()` | Flushes the queued requests, half-closes, then requests the final status and the response. |
 | `sendRequest()`, `close()`, `isOpen()`, `canWrite()`, `isWriteInProgress()`, `state()`, `status()`, `getStream()`, `writeQueueLimits()`, `setWriteQueueLimits()`, `writeQueueStats()` | As for `AsyncReadWriteStream`. |
 
@@ -395,7 +428,7 @@ Header `<grpc_utils/AsyncReadStream.h>`. A server-streaming call: one request, m
 |---|---|
 | `AsyncReadStream()` | Creates a closed stream. Non-copyable, non-movable. |
 | `template<F> bool open(F&& factory)` | Closes any previous call and opens a new one: the factory returns `std::unique_ptr<ClientAsyncReaderInterface<Resp>>`, e.g. `stub->AsyncSubscribe(ctx, request, cq, tag)` (the request is serialized right away and need not outlive the call). Starts reading immediately. Returns `false` (status `INTERNAL`) if the factory returns null. |
-| `template<H> bool poll(H&& handler, size_t max_events = 64)` / `template<H, Rep, Period> bool pollFor(H&& handler, duration timeout, size_t max_events = 64)` | As for `AsyncReadWriteStream`: `handler(ResponseProto&&)` is called per received message and may call `close()`. Return `false` once the call has ended. |
+| `template<H> bool poll(H&& handler, size_t max_events = 64)` / `template<H, Rep, Period> bool pollFor(H&& handler, duration timeout, size_t max_events = 1)` | As for `AsyncReadWriteStream`: `handler(ResponseProto&&)` is called per received message and may call `close()`. Return `false` once the call has ended. |
 | `void close()`, `bool isOpen() const`, `StreamState state() const`, `const grpc::Status& status() const`, `getStream()` | As for `AsyncReadWriteStream`. |
 
 ### `AsyncReadWriteStream<RequestProto, ResponseProto>`
@@ -408,10 +441,10 @@ Header `<grpc_utils/AsyncReadWriteStream.h>` (includes the other headers). Deriv
 |---|---|
 | `AsyncReadWriteStream()` / `explicit AsyncReadWriteStream(const WriteQueueLimits&)` | Creates a closed stream with default or given queue limits. Non-copyable, non-movable. |
 | `template<F> bool open(F&& factory)` | Closes any previous call, creates a fresh context and completion queue, and calls `factory(grpc::ClientContext*, grpc::CompletionQueue*, void* tag)`, which must return `std::unique_ptr<ClientAsyncReaderWriterInterface<Req, Resp>>` from an `Async*` stub method. Returns `false` (status `INTERNAL`) if the factory returns null. Resets the statistics. |
-| `SendResult sendRequest(RequestProto)` | Writes the request or queues it (see the bounded queue). Never blocks. |
+| `SendResult sendRequest(const RequestProto&)` / `SendResult sendRequest(RequestProto&&)` | Writes the request or queues it (see the bounded queue). Never blocks. A request written at once is not copied; an lvalue is copied (an rvalue moved) only when it is queued. |
 | `bool writesDone()` | Half-closes the client side after the queued requests are flushed. `false` if not in `Open` state. |
-| `template<H> bool poll(H&& handler, size_t max_events = 64)` | Processes up to `max_events` already available events without waiting. Calls `handler(ResponseProto&&)` per received message. Returns `false` once the call has ended. |
-| `template<H, Rep, Period> bool pollFor(H&& handler, duration timeout, size_t max_events = 64)` | Like `poll()`, but waits up to `timeout` for the first event. |
+| `template<H> bool poll(H&& handler, size_t max_events = 64)` | Processes up to `max_events` already available events without waiting for new ones. Calls `handler(ResponseProto&&)` per received message. Returns `false` once the call has ended. |
+| `template<H, Rep, Period> bool pollFor(H&& handler, duration timeout, size_t max_events = 1)` | Waits up to `timeout` for the next event and processes it; returns like `poll()`. With `max_events > 1`, also processes the further events already available, at the cost of a final check that can take up to 50 µs (see [Polling](#polling)). |
 | `void close()` | Cancels the call if active (status `CANCELLED`), discards queued requests and releases all resources. Also called by the destructor. |
 | `bool isOpen() const` | A call is active (any state but closed). |
 | `bool canWrite() const` | New requests are accepted (open and not half-closed/ending). |
@@ -701,7 +734,7 @@ built with C++20 as well, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
 | UndefinedBehaviorSanitizer | ✔ | ✔ | ✘ not available | ✘ |
 | LeakSanitizer | ✔ | ✘ not supported, `detect_leaks=0` | ✘ | ✘ |
 | Container-overflow checks | ✘ `detect_container_overflow=0` | ✘ `detect_container_overflow=0` | ✘ `detect_container_overflow=0`, `_DISABLE_{VECTOR,STRING,OPTIONAL}_ANNOTATION` | ✘ |
-| Benchmark heap tracking | ✔ `malloc_usable_size` | ✔ `malloc_size` | ✔ `_msize` | ✔ `_msize` |
+| Benchmark heap tracking | ✔ | ✔ | ✔ | ✔ |
 | Benchmark RSS | ✔ `/proc/self/statm` | ✔ `task_info` | ✔ `GetProcessMemoryInfo` | ✔ |
 
 Notes:
@@ -726,8 +759,11 @@ Notes:
   quarantine freed memory), so it is off in sanitizer builds — both by CMake and by a compile-time
   check in `MemoryTracker.cpp`. The heavy-load benchmark then reports heap figures as `n/a`, still
   verifies the queue's own byte and message bounds, and skips the heap comparison with a warning.
-- On platforms without a usable-size API, heap tracking is compiled out the same way; without an RSS
-  API, RSS is reported as `n/a`.
+- Heap tracking counts the requested bytes of every C++ allocation and keeps each block's size in a
+  header in front of it, so it works on every platform and adds no allocator queries (such as `_msize`,
+  which takes the heap lock on Windows) to the measured code. Its counters sit on separate cache lines,
+  and allocations are counted per thread in batches, to limit the contention between the benchmark
+  thread and the gRPC threads, which allocate just as often. Without an RSS API, RSS is reported as `n/a`.
 - The test server simulates slow consumers with microsecond delays. `sleep_for` has ~1 ms
   granularity on Windows (and is coarse on macOS), so the last stretch of each delay is spent
   yielding: results are comparable across platforms.
@@ -761,10 +797,10 @@ built on the [test utilities](#test-utilities-for-your-own-tests):
 
 | Suite | File | Approach |
 |---|---|---|
-| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` (`grpc_test_utils/FakeReaderWriter.h`) that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
+| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` (`grpc_test_utils/FakeReaderWriter.h`) that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish, and one event per `pollFor()` call; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
 | `[write-queue]` | `tests/WriteQueueTests.cpp` | Bounded queue: message and byte limits, both overflow policies, oversized requests, zero-capacity queue, run-time limit changes, statistics and the accounting invariant, and a 200 000-request flood proving the queue never exceeds its limits. |
 | `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to the repository's test service (`tests/support/TestServer.*`) in an **in-process server** (`grpc_test_utils/InProcessServer.h`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
-| `[write-stream]` | `tests/WriteStreamTests.cpp` | `AsyncWriteStream` for client-streaming calls: the state machine through a fake `ClientAsyncWriterInterface` (no reads, Finish right after the half-close or after a failed write or start-call, close, reopen, bounded queue, no API contract violations), compile-time checks of the class relations and concepts, and `Upload` calls to the in-process test server (all requests in order with the response, empty upload, server errors, early server reply, cancellation, deadline, unreachable server, sequential calls, slow server with a bounded queue). |
+| `[write-stream]` | `tests/WriteStreamTests.cpp` | `AsyncWriteStream` for client-streaming calls: the state machine through a fake `ClientAsyncWriterInterface` (no reads, Finish right after the half-close or after a failed write or start-call, close, reopen, bounded queue, no API contract violations), `poll()` of an idle stream returning without waiting for the completion queue, compile-time checks of the class relations and concepts, and `Upload` calls to the in-process test server (all requests in order with the response, empty upload, server errors, early server reply, cancellation, deadline, unreachable server, sequential calls, slow server with a bounded queue). |
 | `[read-stream]` | `tests/ReadStreamTests.cpp` | `AsyncReadStream` for server-streaming calls and the composition of the stream classes: compile-time checks of the layering (single inheritance, one core, no polymorphism) and the concepts; the state machine through a fake `ClientAsyncReaderInterface` (request passed to the stub, reading before the start-call completes, end of stream, Finish waiting for the start-call, failed start-call, close, re-entrant close, reopen, no writes); and `Subscribe` calls to the in-process test server (5000-response burst in order, single and empty responses, server errors, cancellation observed by the server, deadline, unreachable server, sequential calls). |
 | `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used the way a product's tests would use them, with nothing but `<grpc_utils/…>` and `<grpc_test_utils/…>`: a product message type of its own driven through the fake call, and a generic echo service (no generated code) called through an `InProcessServer`. |
 
@@ -802,7 +838,10 @@ selected by tag:
 |---|---|
 | `[latency]` | Ping-pong round-trip (send one request, wait for its echo) with 64 B and 16 KiB payloads |
 | `[throughput]` | 1000 pipelined echoes with 64 B, 1 KiB and 16 KiB payloads |
+| `[read]` | `AsyncReadStream`: a server-streaming call delivering 1000 responses of 64 B, 1 KiB and 16 KiB |
+| `[write]` | `AsyncWriteStream`: a client-streaming call sending 1000 requests of 64 B, 1 KiB and 16 KiB, then the half-close and the final status |
 | `[queue]` | Cost of `sendRequest()` when enqueueing, rejecting (`DropNewest`, full) and evicting (`DropOldest`, full) |
+| `[poll]` | Cost of `poll()` with nothing to process: an idle `AsyncWriteStream` (no operation outstanding) and an idle `AsyncReadWriteStream` (its read always outstanding), next to the in-process server's polling threads |
 | `[load]` | Heavy load against a slow server, comparing unbounded and bounded queues: peak C++ heap growth, peak RSS growth, peak queue size/bytes, written/dropped/received counts, mean send cost, produce and drain time, p50/p99 send→echo latency, and a histogram of `sendRequest()` results per `SendResult` |
 
 Memory is measured with `benchmarks/MemoryTracker.cpp`, which (where supported, see
@@ -820,46 +859,56 @@ GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US=50 ./build/benchmarks/GrpcAsyncStreamBen
 
 `ctest --test-dir build -L benchmark` runs all of them through CTest.
 
+[docs/Optimizations.md](docs/Optimizations.md) describes how the streams were profiled under heavy load,
+the bottlenecks found and the optimizations made, with their measured effect.
+
 ### Sample results
 
-Release build, C++20, GCC 13.3, gRPC 1.71.0, Linux x86-64 container with 2 vCPUs; client and server in one
+Release build (`conan-release` preset), C++20, GCC 15.2, gRPC 1.72.0 from Conan, Linux x86-64 on an
+AMD Ryzen 9 9950X3D, pinned to the eight cores of one CCD (`taskset -c 8-15`); client and server in one
 process over an in-process channel. Absolute numbers depend on the machine; the relations between the
 configurations are what matters.
 
-**Latency, throughput and queue operations** (mean of 20 samples):
+**Latency, throughput, polling and queue operations** (median of 5 runs, each the mean of 30 samples;
+100 samples for `sendRequest()`):
 
 | Benchmark | Mean |
 |---|---|
-| ping-pong round-trip, 64 B | 141 µs |
-| ping-pong round-trip, 16 KiB | 156 µs |
-| 1000 pipelined echoes, 64 B / 1 KiB / 16 KiB | 28.6 ms / 31.3 ms / 30.2 ms (≈ 32–35 k msg/s) |
-| `sendRequest()` enqueue | 37 ns |
-| `sendRequest()` drop newest, queue full | 80 ns |
-| `sendRequest()` evict oldest + enqueue, queue full | 87 ns |
+| ping-pong round-trip, 64 B / 16 KiB | 6.4 µs / 8.8 µs |
+| 1000 pipelined echoes, 64 B / 1 KiB / 16 KiB | 3.34 ms / 3.11 ms / 3.59 ms (≈ 280–320 k msg/s) |
+| 1000 server-streamed responses (`[read]`), 64 B / 1 KiB / 16 KiB | 2.43 ms / 2.33 ms / 2.97 ms |
+| 1000 client-streamed requests, half-close and status (`[write]`), 64 B / 1 KiB / 16 KiB | 1.96 ms / 2.00 ms / 2.57 ms |
+| `poll()` with nothing to process: idle write stream / idle bidirectional stream | 2.5 ns / 50 µs |
+| `sendRequest()` enqueue | 13 ns |
+| `sendRequest()` drop newest, queue full | 3 ns |
+| `sendRequest()` evict oldest + enqueue, queue full | 34 ns |
 
 **Heavy load**: 50 000 × 1 KiB requests produced as fast as possible (polling every 64 sends)
 against a server that consumes at most one request per 20 µs:
 
 | Write queue | Written | Dropped | Peak queue | Peak heap growth | Peak RSS growth | Drain time | p50 / p99 latency |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| default (1024 msgs / 64 MiB, drop oldest) | 1 796 | 48 204 | 1024 | 1.12 MiB | 1.09 MiB | 89 ms | 11.5 / 87 ms |
-| 256 msgs, drop oldest | 1 034 | 48 966 | 256 | 0.28 MiB | 0.18 MiB | 22 ms | 0.4 / 21 ms |
-| 256 msgs, drop newest | 805 | 49 195 | 256 | 0.28 MiB | 0.19 MiB | 22 ms | 23 / 28 ms |
-| 256 KiB, drop oldest | 1 027 | 48 973 | 253 | 0.28 MiB | 0.19 MiB | 23 ms | 0.4 / 21 ms |
-| **unbounded** | 50 000 | 0 | 49 291 | **53.5 MiB** | **54.2 MiB** | **4.9 s** | **2.5 / 4.8 s** |
+| default (1024 msgs / 64 MiB, drop oldest) | 1 773 | 48 227 | 1024 | 1.10 MiB | 1.17 MiB | 57 ms | 8.5 / 56 ms |
+| 256 msgs, drop oldest | 1 000 | 49 000 | 256 | 0.28 MiB | 0.26 MiB | 14 ms | 0.3 / 14 ms |
+| 256 msgs, drop newest | 997 | 49 003 | 256 | 0.28 MiB | 0.26 MiB | 14 ms | 14 / 14 ms |
+| 256 KiB, drop oldest | 997 | 49 003 | 253 | 0.28 MiB | 0.25 MiB | 14 ms | 0.3 / 14 ms |
+| **unbounded** | 50 000 | 0 | 49 252 | **53.7 MiB** | **55.6 MiB** | **2.7 s** | **1.4 / 2.7 s** |
 
 What the numbers show:
 
 - With an unbounded queue, memory grows linearly with the backlog (≈ 1.1 KiB per pending 1 KiB
-  request) — 50× more here, and without limit for a longer or faster producer. Every bounded
+  request) — about 50× more here, and without limit for a longer or faster producer. Every bounded
   configuration stays at its configured limit regardless of how many requests are produced.
 - The backlog also turns into **latency**: unbounded, a request waits seconds behind older ones,
-  and closing the stream takes 4.9 s to drain. Bounded queues cap both.
+  and closing the stream takes 2.7 s to drain. Bounded queues cap both.
 - `DropOldest` delivers the *freshest* data (median latency below 1 ms: most delivered requests were
   produced just before they were written), whereas `DropNewest` delivers the *earliest* data with a
   latency equal to the queue's drain time.
-- The cost of the bound itself is negligible: dropping or evicting a request costs 40–50 ns more
-  than enqueueing it.
+- The cost of the bound itself is negligible: dropping a request (3 ns) is cheaper than enqueueing it
+  (13 ns), and evicting the oldest to make room costs about 20 ns more.
+- A ping-pong round trip takes 6–9 µs: `pollFor()` returns as soon as the response is handled. A
+  `poll()` that finds nothing takes 50 µs on an idle bidirectional stream here, because the in-process
+  server's threads also poll (see [Polling](#polling)); an idle write stream skips the check.
 
 ---
 

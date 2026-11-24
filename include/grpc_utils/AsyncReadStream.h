@@ -92,29 +92,41 @@ public:
         return true;
     }
 
-    // Cancels the call (if still active) and releases all resources.
+    // Cancels the call (if still active) and releases all resources, including
+    // the memory of the read buffers.
     void close()
     {
         Base::close();
-        m_pending_response.Clear();
+        m_pending_response = ResponseProto{};
+        m_spare_response   = ResponseProto{};
     }
 
     // Non-blocking processing of up to max_events currently available stream
     // events. Received responses are passed one by one to the response handler,
     // which may call any member function, including close(). Returns false once
     // the call has ended (status() then holds the reason), true otherwise.
+    // When no event is available, gRPC may take up to the thread's timer slack
+    // to report it (see pollFor()).
     template<ResponseHandlerFor<ResponseProto> ResponseHandler>
     bool poll(ResponseHandler&& response_handler, std::size_t max_events = 64)
     {
         return this->processEvents(eventHandler(response_handler), max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
     }
 
-    // Like poll(), but waits up to `timeout` for the first event, which avoids
-    // busy polling in a dedicated stream thread. Further already available
-    // events are processed without waiting.
+    // Waits up to `timeout` for the next event and processes it, which avoids
+    // busy polling in a dedicated stream thread; returns like poll().
+    //
+    // One event per call by default: the loop calling pollFor() takes the
+    // following ones, and the next call returns at once with an event that is
+    // already available. With max_events > 1, the further available events are
+    // processed in the same call, but finding out that none is left is not
+    // free: when another thread of the process polls a gRPC completion queue
+    // (a gRPC server, the thread of another stream), gRPC then waits up to the
+    // thread's timer slack (50 us by default on Linux) before returning, which
+    // would delay whatever the caller does next, such as sending a request.
     template<ResponseHandlerFor<ResponseProto> ResponseHandler, typename Rep, typename Period>
     bool pollFor(ResponseHandler&& response_handler, std::chrono::duration<Rep, Period> timeout,
-                 std::size_t max_events = 64)
+                 std::size_t max_events = 1)
     {
         return this->processEvents(eventHandler(response_handler), max_events, Base::deadlineAfter(timeout));
     }
@@ -144,10 +156,21 @@ protected:
 
         // Move the message out before re-arming the read: the read buffer is
         // overwritten by the next read, and the handler may keep the message.
+        // The next read goes into the spare buffer, which holds the cleared
+        // message of the previous event: Clear() keeps the capacity of string,
+        // bytes and repeated fields, so a handler that does not take the
+        // message saves gRPC from reallocating them for every response.
         ResponseProto response = std::move(m_pending_response);
-        m_pending_response.Clear();
+        m_pending_response     = std::move(m_spare_response);
         startRead();
         response_handler(std::move(response));
+        // Recycle what the handler left (an empty message if it took it), unless
+        // it closed the stream, which releases the buffers.
+        if (this->isOpen())
+        {
+            response.Clear();
+            m_spare_response = std::move(response);
+        }
     }
 
 private:
@@ -163,7 +186,8 @@ private:
         this->setReadOperationPending(true);
     }
 
-    ResponseProto m_pending_response;
+    ResponseProto m_pending_response; // target of the outstanding read
+    ResponseProto m_spare_response;   // cleared buffer for the next read (see handleEvent)
 };
 
 } // namespace grpc_utils

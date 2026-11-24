@@ -7,6 +7,7 @@
 // AsyncReadWriteStream. Applications use those classes; this header only
 // holds what they have in common.
 
+#include <grpc/support/time.h>
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
@@ -168,19 +169,33 @@ protected:
         return true;
     }
 
-    // Processes up to max_events events, waiting until `first_deadline` for the
-    // first one, and passes each to `handle_event(tag, ok)`. Returns false once
-    // the call has ended and the stream has been released.
-    template<typename EventHandler, typename Deadline>
-    bool processEvents(EventHandler&& handle_event, std::size_t max_events, const Deadline& first_deadline)
+    // Processes up to max_events events and passes each to `handle_event(tag, ok)`.
+    // The first AsyncNext waits until `first_deadline` (gpr_inf_past: does not
+    // wait), the following ones only take events that are already available.
+    // Returns false once the call has ended and the stream has been released.
+    //
+    // An AsyncNext that finds no event is not free: when another thread of the
+    // process is gRPC's designated poller (a gRPC server, or the thread of
+    // another stream), gRPC waits on a condition variable even for an expired
+    // deadline, and Linux extends that zero-timeout wait by the thread's timer
+    // slack, 50 us by default. So no AsyncNext is made when no operation is
+    // outstanding, since no event can arrive then, except for a first one with
+    // a future deadline, which keeps pollFor() pacing the caller's loop.
+    template<typename EventHandler>
+    bool processEvents(EventHandler&& handle_event, std::size_t max_events, const gpr_timespec& first_deadline)
     {
+        const bool wait_for_first = gpr_time_cmp(first_deadline, gpr_inf_past(first_deadline.clock_type)) != 0;
+
         for (std::size_t i = 0; i < max_events && m_stream; ++i)
         {
+            if (!hasPendingOperation() && (i > 0 || !wait_for_first))
+                break;
+
             void* tag = nullptr;
             bool  ok  = false;
 
-            // An already expired deadline makes AsyncNext return immediately with
-            // GOT_EVENT if an event is available, or TIMEOUT otherwise
+            // An already expired deadline makes AsyncNext return GOT_EVENT if an
+            // event is available, or TIMEOUT otherwise
             const grpc::CompletionQueue::NextStatus next_status =
                 i == 0 ? m_completion_queue->AsyncNext(&tag, &ok, first_deadline)
                        : m_completion_queue->AsyncNext(&tag, &ok, gpr_inf_past(GPR_CLOCK_MONOTONIC));
@@ -257,6 +272,10 @@ protected:
     [[nodiscard]] StreamInterface* stream() const noexcept { return m_stream.get(); }
 
     // Outstanding operations of the layers
+    [[nodiscard]] bool hasPendingOperation() const noexcept
+    {
+        return m_start_pending || m_read_pending || m_write_pending || m_finish_pending;
+    }
     [[nodiscard]] bool isStartPending() const noexcept { return m_start_pending; }
     [[nodiscard]] bool isWriteOperationPending() const noexcept { return m_write_pending; }
     void               setWriteOperationPending(bool pending) noexcept { m_write_pending = pending; }
@@ -272,11 +291,20 @@ protected:
         return reinterpret_cast<void*>(static_cast<std::underlying_type_t<Tag>>(tag));
     }
 
+    // Deadline for AsyncNext on the monotonic clock: gRPC would otherwise convert
+    // a system_clock deadline to its monotonic clock on every call, and the wait
+    // must not be stretched or cut short by changes of the wall clock.
     template<typename Rep, typename Period>
-    static std::chrono::system_clock::time_point deadlineAfter(std::chrono::duration<Rep, Period> timeout)
+    static gpr_timespec deadlineAfter(std::chrono::duration<Rep, Period> timeout)
     {
-        return std::chrono::system_clock::now() +
-               std::chrono::duration_cast<std::chrono::system_clock::duration>(timeout);
+        // Timeouts beyond a year mean "wait for the first event" (and must not overflow)
+        if (timeout >= std::chrono::hours(24 * 365))
+            return gpr_inf_future(GPR_CLOCK_MONOTONIC);
+        const auto micros = std::chrono::ceil<std::chrono::microseconds>(timeout).count();
+        if (micros <= 0)
+            return gpr_inf_past(GPR_CLOCK_MONOTONIC);
+        return gpr_time_add(gpr_now(GPR_CLOCK_MONOTONIC),
+                            gpr_time_from_micros(static_cast<std::int64_t>(micros), GPR_TIMESPAN));
     }
 
 private:

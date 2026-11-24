@@ -100,8 +100,8 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
     endif()
 endif()
 
-# The benchmark's heap tracking replaces the global operator new/delete and asks
-# the C runtime for the usable size of each block. Sanitizers install their own
+# The benchmark's heap tracking replaces the global operator new/delete and keeps
+# the size of each block in a header in front of it. Sanitizers install their own
 # allocator (and quarantine freed memory), so tracking is disabled with them.
 if(GRPC_ASYNC_STREAM_HEAP_TRACKING AND NOT GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE)
     set(GRPC_ASYNC_STREAM_HEAP_TRACKING_ACTIVE ON)

@@ -1,8 +1,10 @@
 #include "MemoryTracker.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <new>
 
 // ---------------------------------------------------------------------------
@@ -12,8 +14,6 @@
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <malloc/malloc.h>
-#define GRPC_ASYNC_STREAM_USABLE_SIZE(ptr) malloc_size(ptr)
-#define GRPC_ASYNC_STREAM_HAS_USABLE_SIZE 1
 #define GRPC_ASYNC_STREAM_HAS_RSS 1
 #elif defined(_WIN32)
 #ifndef NOMINMAX
@@ -26,17 +26,12 @@
 #include <windows.h>
 // psapi.h must follow windows.h
 #include <psapi.h>
-#define GRPC_ASYNC_STREAM_USABLE_SIZE(ptr) _msize(ptr)
-#define GRPC_ASYNC_STREAM_HAS_USABLE_SIZE 1
 #define GRPC_ASYNC_STREAM_HAS_RSS 1
 #elif defined(__linux__) || defined(__ANDROID__)
 #include <malloc.h>
 #include <unistd.h>
-#define GRPC_ASYNC_STREAM_USABLE_SIZE(ptr) malloc_usable_size(ptr)
-#define GRPC_ASYNC_STREAM_HAS_USABLE_SIZE 1
 #define GRPC_ASYNC_STREAM_HAS_RSS 1
 #else
-#define GRPC_ASYNC_STREAM_HAS_USABLE_SIZE 0
 #define GRPC_ASYNC_STREAM_HAS_RSS 0
 #endif
 
@@ -57,7 +52,7 @@
 #define GRPC_ASYNC_STREAM_HEAP_TRACKING 1
 #endif
 
-#if GRPC_ASYNC_STREAM_HEAP_TRACKING && GRPC_ASYNC_STREAM_HAS_USABLE_SIZE && !GRPC_ASYNC_STREAM_SANITIZED
+#if GRPC_ASYNC_STREAM_HEAP_TRACKING && !GRPC_ASYNC_STREAM_SANITIZED
 #define GRPC_ASYNC_STREAM_TRACK_HEAP 1
 #else
 #define GRPC_ASYNC_STREAM_TRACK_HEAP 0
@@ -72,15 +67,41 @@
 namespace
 {
 
-constinit std::atomic<std::int64_t>  g_live_bytes{0};
-constinit std::atomic<std::int64_t>  g_peak_bytes{0};
-constinit std::atomic<std::uint64_t> g_allocations{0};
+// The counters are updated by every allocation of every thread (the gRPC
+// threads allocate as much as the benchmark thread), so each has a cache line
+// of its own: otherwise the frequent updates of the live bytes also evict the
+// peak, which is read by every allocation but rarely changes, from the caches
+// of the other cores. 128 bytes covers the line pairs prefetched together on
+// x86 and the 128-byte lines of Apple silicon.
+constexpr std::size_t counter_alignment = 128;
 
-void onAllocated(void* ptr) noexcept
+alignas(counter_alignment) constinit std::atomic<std::int64_t>  g_live_bytes{0};
+alignas(counter_alignment) constinit std::atomic<std::int64_t>  g_peak_bytes{0};
+alignas(counter_alignment) constinit std::atomic<std::uint64_t> g_allocations{0};
+
+// Allocations are counted per thread and added to g_allocations in batches,
+// which saves a contended atomic update per allocation; the total therefore
+// lags by less than one batch per thread.
+constexpr std::uint32_t          allocation_batch = 64;
+constinit thread_local std::uint32_t t_unreported_allocations = 0;
+
+// Each block is prefixed with a header holding its requested size, so that
+// deallocation does not have to ask the allocator for it: the usable-size APIs
+// are expensive on some platforms (_msize takes the heap lock on Windows) and
+// would dominate profiles of allocation-heavy code. The header keeps the
+// alignment guaranteed by malloc for the returned pointer.
+constexpr std::size_t header_size = alignof(std::max_align_t) < sizeof(std::size_t) ? sizeof(std::size_t)
+                                                                                    : alignof(std::max_align_t);
+
+void onAllocated(std::size_t size) noexcept
 {
-    const auto size = static_cast<std::int64_t>(GRPC_ASYNC_STREAM_USABLE_SIZE(ptr));
-    const auto live = g_live_bytes.fetch_add(size, std::memory_order_relaxed) + size;
-    g_allocations.fetch_add(1, std::memory_order_relaxed);
+    const auto bytes = static_cast<std::int64_t>(size);
+    const auto live  = g_live_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    if (++t_unreported_allocations == allocation_batch)
+    {
+        g_allocations.fetch_add(allocation_batch, std::memory_order_relaxed);
+        t_unreported_allocations = 0;
+    }
 
     std::int64_t peak = g_peak_bytes.load(std::memory_order_relaxed);
     while (live > peak && !g_peak_bytes.compare_exchange_weak(peak, live, std::memory_order_relaxed))
@@ -88,20 +109,23 @@ void onAllocated(void* ptr) noexcept
     }
 }
 
-void* allocate(std::size_t size)
-{
-    void* ptr = std::malloc(size == 0 ? 1 : size);
-    if (!ptr) [[unlikely]]
-        throw std::bad_alloc();
-    onAllocated(ptr);
-    return ptr;
-}
-
 void* allocateNoThrow(std::size_t size) noexcept
 {
-    void* ptr = std::malloc(size == 0 ? 1 : size);
-    if (ptr) [[likely]]
-        onAllocated(ptr);
+    if (size > std::numeric_limits<std::size_t>::max() - header_size) [[unlikely]]
+        return nullptr;
+    void* block = std::malloc(header_size + size);
+    if (!block) [[unlikely]]
+        return nullptr;
+    *static_cast<std::size_t*>(block) = size;
+    onAllocated(size);
+    return static_cast<std::byte*>(block) + header_size;
+}
+
+void* allocate(std::size_t size)
+{
+    void* ptr = allocateNoThrow(size);
+    if (!ptr) [[unlikely]]
+        throw std::bad_alloc();
     return ptr;
 }
 
@@ -109,8 +133,9 @@ void deallocate(void* ptr) noexcept
 {
     if (!ptr)
         return;
-    g_live_bytes.fetch_sub(static_cast<std::int64_t>(GRPC_ASYNC_STREAM_USABLE_SIZE(ptr)), std::memory_order_relaxed);
-    std::free(ptr);
+    void* block = static_cast<std::byte*>(ptr) - header_size;
+    g_live_bytes.fetch_sub(static_cast<std::int64_t>(*static_cast<std::size_t*>(block)), std::memory_order_relaxed);
+    std::free(block);
 }
 
 } // namespace
@@ -199,8 +224,6 @@ void releaseFreeMemory() noexcept
 #define GRPC_ASYNC_STREAM_HEAP_TEXT "C++ heap tracked"
 #elif GRPC_ASYNC_STREAM_SANITIZED
 #define GRPC_ASYNC_STREAM_HEAP_TEXT "C++ heap not tracked (sanitizer build)"
-#elif !GRPC_ASYNC_STREAM_HAS_USABLE_SIZE
-#define GRPC_ASYNC_STREAM_HEAP_TEXT "C++ heap not tracked (no usable-size API on this platform)"
 #else
 #define GRPC_ASYNC_STREAM_HEAP_TEXT "C++ heap not tracked (GRPC_ASYNC_STREAM_HEAP_TRACKING=OFF)"
 #endif
