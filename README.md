@@ -149,7 +149,8 @@ classDiagram
     }
     class AsyncWriteStream~Req, Base~ {
         +open(factory) bool
-        +sendRequest(Req) SendResult
+        +sendRequest(const Req&) SendResult
+        +sendRequest(Req&&) SendResult
         +writesDone() bool
         +poll(max_events) bool
         +pollFor(timeout, max_events) bool
@@ -159,7 +160,6 @@ classDiagram
         #handleEvent(tag, ok, context)
         #enterFinishing()
         -RingQueue~PendingWrite~ pending_writes
-        -Req current_write
     }
     class AsyncReadStream~Resp, Base~ {
         +open(factory) bool
@@ -305,8 +305,12 @@ goes into the bounded queue. The write slot is busy from `open()` until the star
 (the initial metadata shares gRPC's internal write operation set, and a premature `Write` would fail
 with `GRPC_CALL_ERROR_TOO_MANY_OPERATIONS`), during every `Write`, and during `WritesDone`.
 Whenever a write completes successfully, the next queued request is written, or the pending
-half-close is issued, or `Finish` is attempted when the call is ending. The message being written
-is kept alive in a member until its completion, then reset to release its memory.
+half-close is issued, or `Finish` is attempted when the call is ending. gRPC serializes a request
+within `Write()` and keeps no reference to it, so the stream keeps no copy of the request being
+written: a request sent while the write slot is free is written straight from the caller's object,
+without being copied or moved, and a queued request is written straight from its queue slot, which
+is destroyed right after. The stream takes a request (copying an lvalue, moving an rvalue) only when it
+has to queue it; a request that is dropped is never copied.
 
 **Read path.** Exactly one `Read` is outstanding for the whole call. On completion the message is
 moved out of the read buffer, the next `Read` is armed, and only then is the handler invoked, so the
@@ -350,10 +354,11 @@ changed at any time with `setWriteQueueLimits()`; tightening them immediately tr
 the configured policy. `WriteQueueLimits::unbounded()` restores unlimited buffering.
 
 **Memory guarantee.** The memory held by the stream for outgoing requests is at most
-`max_bytes` (queued requests, serialized-size measure) plus the one request in flight, plus the
-per-entry container overhead for at most `max_messages` entries. The queue is a ring buffer that grows
-by doubling and allocates nothing per request; its storage is released again once a load peak (more than
-256 queued requests) is over.
+`max_bytes` (queued requests, serialized-size measure) plus the per-entry container overhead for at
+most `max_messages` entries. The request being written is held by gRPC in serialized form, not by the
+stream. The queue is a ring buffer that grows by doubling and allocates nothing per request; a request
+is destroyed, and its memory freed, as soon as it leaves the queue, and the queue's storage is released
+again once a load peak (more than 256 queued requests) is over.
 
 > `ByteSizeLong()` is the serialized size; the in-memory size of a protobuf message is somewhat larger
 > (object header, string capacities). Choose `max_bytes` with that margin in mind, or rely on
@@ -413,7 +418,7 @@ Header `<grpc_utils/AsyncReadWriteStream.h>` (includes the other headers). Deriv
 |---|---|
 | `AsyncReadWriteStream()` / `explicit AsyncReadWriteStream(const WriteQueueLimits&)` | Creates a closed stream with default or given queue limits. Non-copyable, non-movable. |
 | `template<F> bool open(F&& factory)` | Closes any previous call, creates a fresh context and completion queue, and calls `factory(grpc::ClientContext*, grpc::CompletionQueue*, void* tag)`, which must return `std::unique_ptr<ClientAsyncReaderWriterInterface<Req, Resp>>` from an `Async*` stub method. Returns `false` (status `INTERNAL`) if the factory returns null. Resets the statistics. |
-| `SendResult sendRequest(RequestProto)` | Writes the request or queues it (see the bounded queue). Never blocks. |
+| `SendResult sendRequest(const RequestProto&)` / `SendResult sendRequest(RequestProto&&)` | Writes the request or queues it (see the bounded queue). Never blocks. A request written at once is not copied; an lvalue is copied (an rvalue moved) only when it is queued. |
 | `bool writesDone()` | Half-closes the client side after the queued requests are flushed. `false` if not in `Open` state. |
 | `template<H> bool poll(H&& handler, size_t max_events = 64)` | Processes up to `max_events` already available events without waiting. Calls `handler(ResponseProto&&)` per received message. Returns `false` once the call has ended. |
 | `template<H, Rep, Period> bool pollFor(H&& handler, duration timeout, size_t max_events = 64)` | Like `poll()`, but waits up to `timeout` for the first event. |

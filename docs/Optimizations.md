@@ -2,7 +2,8 @@
 
 This document records how the stream classes were profiled under heavy load, which bottlenecks were
 found, what was changed, and what the changes measurably gained. It also lists what was deliberately
-left alone and why.
+left alone and why. The [second round](#second-round-no-copies-on-the-write-path) removes the remaining
+copies and moves of requests on the write path.
 
 ## Method
 
@@ -111,6 +112,9 @@ year or more becomes an unbounded wait instead of overflowing the arithmetic.
 
 ### 4. Freeing the written request
 
+*Superseded by the [second round](#second-round-no-copies-on-the-write-path): the stream no longer keeps
+the request being written at all.*
+
 `include/grpc_utils/AsyncWriteStream.h`
 
 After a write completes, the code was commented "free its memory now" but called
@@ -183,6 +187,133 @@ GCC and Clang configurations are covered by CI.
 - **The heavy-load `send ns` figure for the unbounded queue** (about 440 ns compared with about 190 ns
   for bounded queues) comes from the benchmark itself: building a 1 KiB request per send and growing
   the process by about 50 MiB. It is not a cost of the library.
+
+## Second round: no copies on the write path
+
+### Findings
+
+The first round left the write path with more copies and moves than gRPC requires:
+
+1. **The stream kept its own copy of the request being written.** `startWrite()` moved every request
+   into the member `m_current_write` and passed that to `Write()`, "kept alive until the write
+   completes". gRPC does not need this: `ClientAsyncWriterInterface::Write()` serializes the message
+   into its own byte buffer before returning, and the gRPC API documents that it "doesn't take
+   ownership or a reference to msg, so it is safe to deallocate once Write returns"
+   (`grpcpp/support/async_stream.h`, `AsyncWriterInterface::Write`). While a write was in flight the
+   stream therefore held each request twice: once as a message object, once serialized inside gRPC.
+2. **`sendRequest(RequestProto request)` took the request by value.** A caller passing an lvalue, as
+   in the README examples (`stream.sendRequest(request)`), paid for a full copy (an allocation plus a
+   copy of every field) on every call, including the common case where the request is written at
+   once and the cases where it is dropped or the stream is not writable.
+3. **A queued request was moved six times.** Into `enqueue()`'s by-value parameter, into a
+   `PendingWrite`, into its slot, out of the slot, out of the `PendingWrite`, into `m_current_write`;
+   one written at once was moved twice. For a protobuf message every move is a default construction, a
+   field-by-field swap and a destruction.
+4. **The ring buffer constructed empty messages.** It stored its slots in a `std::vector<T>`, so
+   every growth default-constructed a message in every new slot before moving the live ones over, and
+   popped slots kept moved-from messages until they were overwritten or released.
+
+### Changes
+
+All in `include/grpc_utils/AsyncWriteStream.h`.
+
+**Write without a member copy.** `m_current_write` is gone. `startWrite()` takes a `const&` and passes
+it straight to `Write()`. A queued request is written straight from its queue slot, and the slot is
+destroyed right after, which frees the request's memory at once. While a write is in flight, the
+request exists only in serialized form inside gRPC. The write statistics are unchanged: they never
+needed the message itself.
+
+**Two overloads of `sendRequest()`.** `sendRequest(const RequestProto&)` and
+`sendRequest(RequestProto&&)` replace the by-value overload:
+
+| Outcome | lvalue, before | lvalue, after | rvalue, before | rvalue, after |
+|---|---|---|---|---|
+| `Written` | 1 copy, 2 moves | nothing | 2–3 moves | nothing |
+| `Queued`, then written | 1 copy, 6 moves | 1 copy (into the slot) | 6–7 moves | 1 move (into the slot) |
+| `Dropped` | 1 copy, 1 move | nothing | 1–2 moves | nothing |
+| `NotWritable` | 1 copy | nothing | 0–1 move | nothing |
+
+The ranges for rvalues depend on whether the argument is a temporary, which initializes the old
+by-value parameter without a move, or a `std::move`d object. These counts were taken with an
+instrumented message type. Before, each completed write also move-assigned an empty message to
+`m_current_write` to free it.
+
+Every existing call compiles unchanged, including braced initializers such as
+`sendRequest({.value = 1})`, which pick the rvalue overload. Only code that takes the address of
+`sendRequest` must now select an overload.
+
+**`RingQueue` on raw storage.** The queue now manages uninitialized storage from `std::allocator<T>`:
+`emplaceBack()` constructs an element in its slot (from the caller's request, copied or moved exactly
+once), `dropFront()` / `dropBack()` destroy one in place, and growing move-constructs only the live
+elements into the new storage. Free slots hold no objects. `popFront()` / `popBack()` remain for code
+that needs the element. Growing uses `std::move_if_noexcept`, and if copying an element throws, the
+new storage is freed and the queue keeps its elements, so the queue still accepts any movable type, as
+the `ProtobufMessage` concept allows. Protobuf messages have `noexcept` moves and are always moved.
+
+### Results
+
+gRPC and protobuf are not available in the environment this round was done in, so the gRPC benchmarks
+could not be run. The library's own overhead was measured instead, A/B against the first round's
+headers: both versions of the real headers were compiled (GCC 13.3, `-O2`, Linux x86-64) against a
+minimal stand-in for the gRPC headers whose `Write()` copies the payload into a reused buffer (standing
+in for serialization, without allocating) and completes at once. The message is a protobuf-like class
+with a `uint64` id and a `std::string` payload. Medians of 15 repetitions of 20 000 requests, two
+interleaved runs per version; the machine's run-to-run noise is up to about 25 %.
+
+| Scenario, ns per request | 64 B | 1 KiB | 16 KiB |
+|---|---|---|---|
+| Written at once, lvalue | 37 → 11 | 54 → 21 | 311 → 127 |
+| Written at once, rvalue (destroyed by the caller) | 34 → 19 | within noise | within noise |
+| 20 000 rvalues queued, then written | 66–73 → 31–55 | 100–140 → 66–88 | within noise |
+| Steady queue of 64: enqueue one, write one | 40–47 → 24–31 | 82–144 → 82–101 | 1540 → 1460 |
+| Evict oldest + enqueue, queue of 1024 full | 20–28 → 13–16 | 39–57 → 28–29 | within noise |
+| Dropped (`DropNewest`, full), lvalue | 16–20 → 1 | 27 → 1 | 113 → 1 |
+
+Heap allocations per request fell from 1 to 0 for an lvalue that is written at once or dropped. With
+1 KiB and larger payloads, the rvalue paths are dominated by the allocation and release of the payload
+itself, which the library cannot avoid, so the saved moves disappear in the noise there.
+
+**Memory.**
+
+- While a write is in flight, the stream no longer holds the request: under a slow server that is one
+  message object per stream fewer, besides gRPC's serialized copy.
+- A request's memory is released as soon as it leaves the queue (written, evicted or dropped), never
+  later.
+- The stream object is one request message smaller (`sizeof` of the test stream: 352 → 304 bytes).
+- Callers that keep reusing an lvalue request no longer cause an allocation per send.
+
+**Correctness.** The stream headers and the new tests were compiled with the project's warning flags
+(`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror`) by GCC 13.3 and Clang 18 against the
+stand-in gRPC headers, and scripted scenarios (FIFO order, both overflow policies, byte limits,
+tightening the limits, a failed write, half-close, a handler closing the stream, close with queued
+requests) ran through the repository's `FakeCall` with AddressSanitizer and UndefinedBehaviorSanitizer,
+with no leaked message. Three tests were added to `tests/WriteQueueTests.cpp`: that an lvalue request
+is copied only when queued and otherwise left untouched, that the ring buffer destroys elements as soon
+as they leave it (including across wrap-around and growth), and that a failing copy while growing
+leaves the queue intact. **The full test suite and the gRPC benchmarks still need to be run** with real
+gRPC (MSVC, GCC and Clang through CI).
+
+### To measure with real gRPC
+
+The effect is largest where requests are sent as lvalues, are large, or are dropped:
+
+- `[queue]`: evict + enqueue should gain a little; drop newest passes rvalues and is unaffected.
+- `[throughput]` / `[write]` with 16 KiB payloads: one move fewer per request is small next to
+  serialization; expect at most a few percent.
+- `[load]` with `GRPC_ASYNC_STREAM_BENCH_PAYLOAD=16384`: the heap figure should drop by about one
+  payload per stream, and drops stay allocation-free.
+
+### Still not changed
+
+- **Response buffers.** The read path still moves each response out of its read buffer and recycles a
+  spare (round 1, change 2). Lending the read buffer to the handler without moving it would save two
+  swaps per response, but a handler may poll, close or reopen the stream, and the message it holds
+  would then alias a buffer that gRPC reads into. The few nanoseconds are not worth that hazard next to
+  the microseconds gRPC spends parsing.
+- **`WriteLast`.** Writing the last queued request with `WriteOptions::set_last_message()` would merge
+  it with the half-close and save one operation per call; that is measurable only for short calls.
+- **Write batching** (`set_buffer_hint()`) and the other items listed in [Not changed](#not-changed)
+  still apply.
 
 ## Reproducing
 
