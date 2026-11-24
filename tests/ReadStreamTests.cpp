@@ -453,16 +453,21 @@ TEST_CASE("A read stream object can run many subscriptions sequentially", "[read
     SubscribeFixture f;
     for (std::uint64_t call = 0; call < 30; ++call)
     {
-        REQUIRE(f.open(makeBurst(call * 10, 3)));
         if (call % 2 == 0)
         {
+            REQUIRE(f.open(makeBurst(call * 10, 3)));
             REQUIRE(f.finish());
             CHECK(f.stream.status().ok());
             CHECK(idsOf(f.responses) == std::vector<std::uint64_t>{call * 10, call * 10 + 1, call * 10 + 2});
         }
         else
         {
+            // A burst the server cannot finish before the client closes: a short one
+            // may be delivered completely, Finish included, by the poll that
+            // receives its first response, leaving nothing to cancel.
+            REQUIRE(f.open(makeBurst(call * 10, 10'000'000)));
             REQUIRE(f.pump([&] { return !f.responses.empty(); }));
+            REQUIRE(f.stream.isOpen());
             f.stream.close();
             CHECK(f.stream.status().error_code() == grpc::StatusCode::CANCELLED);
         }
