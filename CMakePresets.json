@@ -1,0 +1,181 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 25,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "description": "Ninja build in build-<preset>; on Windows run from a Visual Studio developer environment (x64)",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-${presetName}",
+            "architecture": {
+                "value": "x64",
+                "strategy": "external"
+            },
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "base",
+            "displayName": "Release",
+            "description": "Optimized build without debug information",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "relwithdebinfo",
+            "inherits": "base",
+            "displayName": "RelWithDebInfo",
+            "description": "Optimized build with debug information",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "relwithsanitizers",
+            "inherits": "base",
+            "displayName": "RelWithSanitizers",
+            "description": "RelWithDebInfo with the sanitizers of the toolchain: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+                "GRPC_ASYNC_STREAM_ENABLE_SANITIZERS": "ON"
+            }
+        },
+        {
+            "name": "debug",
+            "inherits": "base",
+            "displayName": "Debug",
+            "description": "Unoptimized build with debug information",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "release",
+            "configurePreset": "release",
+            "displayName": "Release"
+        },
+        {
+            "name": "relwithdebinfo",
+            "configurePreset": "relwithdebinfo",
+            "displayName": "RelWithDebInfo"
+        },
+        {
+            "name": "relwithsanitizers",
+            "configurePreset": "relwithsanitizers",
+            "displayName": "RelWithSanitizers"
+        },
+        {
+            "name": "debug",
+            "configurePreset": "debug",
+            "displayName": "Debug"
+        }
+    ],
+    "testPresets": [
+        {
+            "name": "tests",
+            "hidden": true,
+            "description": "Unit and integration tests (the benchmarks are excluded)",
+            "output": {
+                "outputOnFailure": true
+            },
+            "filter": {
+                "exclude": {
+                    "label": "benchmark"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error",
+                "timeout": 300
+            }
+        },
+        {
+            "name": "release",
+            "inherits": "tests",
+            "configurePreset": "release",
+            "displayName": "Release tests"
+        },
+        {
+            "name": "relwithdebinfo",
+            "inherits": "tests",
+            "configurePreset": "relwithdebinfo",
+            "displayName": "RelWithDebInfo tests"
+        },
+        {
+            "name": "relwithsanitizers",
+            "inherits": "tests",
+            "configurePreset": "relwithsanitizers",
+            "displayName": "RelWithSanitizers tests"
+        },
+        {
+            "name": "debug",
+            "inherits": "tests",
+            "configurePreset": "debug",
+            "displayName": "Debug tests"
+        },
+        {
+            "name": "release-benchmarks",
+            "configurePreset": "release",
+            "displayName": "Release benchmarks",
+            "description": "Heavy-load benchmark with its memory-bound checks",
+            "output": {
+                "outputOnFailure": true
+            },
+            "filter": {
+                "include": {
+                    "label": "benchmark"
+                }
+            },
+            "execution": {
+                "noTestsAction": "error"
+            }
+        }
+    ],
+    "workflowPresets": [
+        {
+            "name": "release",
+            "displayName": "Release: configure, build, test",
+            "steps": [
+                { "type": "configure", "name": "release" },
+                { "type": "build", "name": "release" },
+                { "type": "test", "name": "release" }
+            ]
+        },
+        {
+            "name": "relwithdebinfo",
+            "displayName": "RelWithDebInfo: configure, build, test",
+            "steps": [
+                { "type": "configure", "name": "relwithdebinfo" },
+                { "type": "build", "name": "relwithdebinfo" },
+                { "type": "test", "name": "relwithdebinfo" }
+            ]
+        },
+        {
+            "name": "relwithsanitizers",
+            "displayName": "RelWithSanitizers: configure, build, test",
+            "steps": [
+                { "type": "configure", "name": "relwithsanitizers" },
+                { "type": "build", "name": "relwithsanitizers" },
+                { "type": "test", "name": "relwithsanitizers" }
+            ]
+        },
+        {
+            "name": "debug",
+            "displayName": "Debug: configure, build, test",
+            "steps": [
+                { "type": "configure", "name": "debug" },
+                { "type": "build", "name": "debug" },
+                { "type": "test", "name": "debug" }
+            ]
+        }
+    ]
+}

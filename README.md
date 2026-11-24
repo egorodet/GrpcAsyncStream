@@ -557,6 +557,40 @@ ctest --test-dir build -LE benchmark --output-on-failure      # unit + integrati
 ./build/benchmarks/GrpcAsyncStreamBenchmarks "[benchmark]"     # all benchmarks
 ```
 
+### CMake presets
+
+[`CMakePresets.json`](CMakePresets.json) defines the same four configurations on Linux, macOS and Windows,
+all with the Ninja generator, each in its own build directory `build-<preset>`:
+
+| Preset | `CMAKE_BUILD_TYPE` | Purpose |
+|---|---|---|
+| `release` | `Release` | Optimized, no debug information |
+| `relwithdebinfo` | `RelWithDebInfo` | Optimized, with debug information |
+| `relwithsanitizers` | `RelWithDebInfo` | `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON`: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC (see [memory checks](#platform-support-and-memory-checks)); debug information keeps the reports readable |
+| `debug` | `Debug` | Unoptimized, with debug information |
+
+Every preset name works for configuring, building and testing, and as a workflow that runs all three
+(the test presets exclude the benchmarks; `release-benchmarks` runs them):
+
+```bash
+cmake --workflow --preset release           # configure + build + unit and integration tests
+
+cmake --preset relwithsanitizers            # or step by step
+cmake --build --preset relwithsanitizers
+ctest --preset relwithsanitizers
+ctest --preset release-benchmarks           # heavy-load benchmark of the release build
+```
+
+- The presets do not choose where gRPC comes from: the [dependency lookup](#requirements) uses
+  installed packages when found and builds gRPC with CPM otherwise. Add your own settings on the command
+  line, e.g. `cmake --preset debug -DCMAKE_PREFIX_PATH=/opt/grpc`, or in a `CMakeUserPresets.json` that
+  inherits from these presets.
+- On Windows, run the presets from a Visual Studio developer environment for x64 (see
+  [Windows notes](#windows-notes)); Visual Studio and VS Code's CMake Tools set it up themselves from the
+  presets' `architecture` (`x64`, external strategy).
+- Conan's generated `conan-release` presets (see below) live alongside these in `CMakeUserPresets.json` and
+  keep their own build directory `build/Release`.
+
 With an installed gRPC (e.g. Homebrew `brew install grpc`, vcpkg, or a custom prefix):
 
 ```bash
@@ -735,7 +769,7 @@ ctest --test-dir build -LE benchmark --output-on-failure
 ./build/tests/GrpcAsyncStreamTests --list-tests
 ```
 
-Sanitizer build: `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
+Sanitizer build: `cmake --workflow --preset relwithsanitizers`, or `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
 (the sanitizers and their runtime options are chosen per platform, see the table above; CTest passes the options).
 
 ---
@@ -904,6 +938,7 @@ target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
 GrpcAsyncStream/
 ├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
+├── CMakePresets.json                 # release / relwithdebinfo / relwithsanitizers / debug presets
 ├── conanfile.py                      # Conan 2 recipe for the dependencies (optional)
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
