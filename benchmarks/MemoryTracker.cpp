@@ -67,9 +67,23 @@
 namespace
 {
 
-constinit std::atomic<std::int64_t>  g_live_bytes{0};
-constinit std::atomic<std::int64_t>  g_peak_bytes{0};
-constinit std::atomic<std::uint64_t> g_allocations{0};
+// The counters are updated by every allocation of every thread (the gRPC
+// threads allocate as much as the benchmark thread), so each has a cache line
+// of its own: otherwise the frequent updates of the live bytes also evict the
+// peak, which is read by every allocation but rarely changes, from the caches
+// of the other cores. 128 bytes covers the line pairs prefetched together on
+// x86 and the 128-byte lines of Apple silicon.
+constexpr std::size_t counter_alignment = 128;
+
+alignas(counter_alignment) constinit std::atomic<std::int64_t>  g_live_bytes{0};
+alignas(counter_alignment) constinit std::atomic<std::int64_t>  g_peak_bytes{0};
+alignas(counter_alignment) constinit std::atomic<std::uint64_t> g_allocations{0};
+
+// Allocations are counted per thread and added to g_allocations in batches,
+// which saves a contended atomic update per allocation; the total therefore
+// lags by less than one batch per thread.
+constexpr std::uint32_t          allocation_batch = 64;
+constinit thread_local std::uint32_t t_unreported_allocations = 0;
 
 // Each block is prefixed with a header holding its requested size, so that
 // deallocation does not have to ask the allocator for it: the usable-size APIs
@@ -83,7 +97,11 @@ void onAllocated(std::size_t size) noexcept
 {
     const auto bytes = static_cast<std::int64_t>(size);
     const auto live  = g_live_bytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
-    g_allocations.fetch_add(1, std::memory_order_relaxed);
+    if (++t_unreported_allocations == allocation_batch)
+    {
+        g_allocations.fetch_add(allocation_batch, std::memory_order_relaxed);
+        t_unreported_allocations = 0;
+    }
 
     std::int64_t peak = g_peak_bytes.load(std::memory_order_relaxed);
     while (live > peak && !g_peak_bytes.compare_exchange_weak(peak, live, std::memory_order_relaxed))

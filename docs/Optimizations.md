@@ -3,7 +3,9 @@
 This document records how the stream classes were profiled under heavy load, which bottlenecks were
 found, what was changed, and what the changes measurably gained. It also lists what was deliberately
 left alone and why. The [second round](#second-round-no-copies-on-the-write-path) removes the remaining
-copies and moves of requests on the write path.
+copies and moves of requests on the write path. The [third round](#third-round-polling-without-stalls)
+removes a stall of about 50 µs from the end of every `pollFor()` call and from `poll()` of an idle write
+stream, which made a round trip about nine times faster, and measures the second round with real gRPC.
 
 ## Method
 
@@ -293,15 +295,49 @@ as they leave it (including across wrap-around and growth), and that a failing c
 leaves the queue intact. **The full test suite and the gRPC benchmarks still need to be run** with real
 gRPC (MSVC, GCC and Clang through CI).
 
-### To measure with real gRPC
+### Measured with real gRPC
 
-The effect is largest where requests are sent as lvalues, are large, or are dropped:
+The effect was expected to be largest where requests are sent as lvalues, are large, or are dropped:
 
 - `[queue]`: evict + enqueue should gain a little; drop newest passes rvalues and is unaffected.
 - `[throughput]` / `[write]` with 16 KiB payloads: one move fewer per request is small next to
   serialization; expect at most a few percent.
 - `[load]` with `GRPC_ASYNC_STREAM_BENCH_PAYLOAD=16384`: the heap figure should drop by about one
   payload per stream, and drops stay allocation-free.
+
+The [third round](#third-round-polling-without-stalls) took these measurements on Linux with GCC 15.2 and
+gRPC 1.72.0: r1 is built with the first round's headers, r2 with the second round's, both from the same
+benchmark source and heap tracker (medians of 5 interleaved runs; see the third round for the setup).
+
+| Benchmark | r1 | r2 | Change |
+|---|---:|---:|---|
+| `sendRequest()` enqueue | 23.9 ns | 13.0 ns | −46 % |
+| `sendRequest()` evict oldest + enqueue, queue full | 43.8 ns | 33.6 ns | −23 % |
+| `sendRequest()` drop newest, queue full | 33.8 ns | 2.8 ns | −92 % |
+| `[throughput]` 1000 echoes × 16 KiB | 3.53 ms | 3.60 ms | within noise |
+| `[write]` 1000 requests × 64 B / 1 KiB / 16 KiB | 1.99 / 1.91 / 2.47 ms | 2.08 / 2.04 / 2.62 ms | +4 / +7 / +6 % |
+| `[load]` 16 KiB payloads, default queue: peak heap growth | 16.22 MiB | 16.20 MiB | −1 payload |
+| `[load]` 16 KiB payloads, unbounded: peak heap growth | 307.46 MiB | 307.08 MiB | −0.4 MiB |
+
+- **`[queue]` gained far more than expected.** The benchmark passes rvalues, so the stand-in measurement
+  predicted little, but with real protobuf messages every saved move is a default construction, a swap
+  of all fields and a destruction, and the drop-newest path no longer moves the request at all.
+- **`[load]` with 16 KiB payloads:** the heap figure dropped by one payload per stream, as expected.
+- **`[write]` measured 4 to 7 % slower** with the second round's headers. The cause is the order of allocation and release, not
+  the code path: the second round destroys a queued request right after `Write()` has serialized it, so
+  gRPC's serialization buffer for the next request is allocated before the previous payload is freed;
+  the first round freed the written request when its write completed, just before the next
+  serialization, which lets glibc's allocator hand the same, still cached block straight back. A
+  diagnostic build that destroys the queue slot only when its write completes (writing it still
+  straight from the slot) measured 1.97 / 1.94 / 2.38 ms against 1.94 / 1.95 / 2.45 ms for r1 and
+  2.03 / 2.04 / 2.51 ms for r2 (8 interleaved runs). It was not adopted: it would hold one request per
+  stream for the duration of every write again, which is the memory the second round removed, for a
+  gain of 2 to 5 % in a benchmark that writes 1000 requests back to back. A stream that writes large
+  requests at full speed and cares more about throughput than about that memory is the case where it
+  would pay off.
+
+With real gRPC, the full test suite (88 test cases) passed with the second round's headers in a Release
+build at the start of the third round.
 
 ### Still not changed
 
@@ -314,6 +350,198 @@ The effect is largest where requests are sent as lvalues, are large, or are drop
   it with the half-close and save one operation per call; that is measurable only for short calls.
 - **Write batching** (`set_buffer_hint()`) and the other items listed in [Not changed](#not-changed)
   still apply.
+
+## Third round: polling without stalls
+
+### Method
+
+This round was done on Linux: AMD Ryzen 9 9950X3D (16 cores, SMT), Ubuntu with kernel 7.0, GCC 15.2,
+glibc 2.43, and gRPC 1.72.0 with protobuf 5.27.0 from Conan, in the `conan-release` configuration
+(`-O3`). It also takes the gRPC measurements that the second round could not.
+
+**Profiling.** `perf` is not available to unprivileged users on that machine
+(`kernel.perf_event_paranoid = 4`), so a small sampling profiler was preloaded into the benchmark
+executable (`LD_PRELOAD`). It arms `ITIMER_PROF`, which sends `SIGPROF` every 250 µs of process CPU
+time to the thread that consumed it, records the thread and its call stack with `backtrace()` in the
+signal handler, and writes the samples and the memory map at exit; `llvm-symbolizer` resolves the
+addresses, including the frames inlined into the RelWithDebInfo build. As in the first round, the
+profiles covered the `[read]`, `[write]`, `[throughput]` and `[latency]` benchmarks and the `[load]`
+scenario at 1.5 million requests without server delay. Samples of Catch2's own timing loops (clock
+resolution estimates, the warm-up) were excluded.
+
+**Timing.** Each variant was built from the same benchmark source and run in interleaved rounds
+(r1, r2, r3lib, r3, then in reverse order, and so on), pinned to the eight cores of one CCD (`taskset -c 8-15`); the
+tables give the median over the rounds of each benchmark's mean. Run-to-run noise on this machine is
+about ±5 %, and up to ±10 % for the first benchmark of a run. Variants:
+
+| Label | Library headers | Heap tracker |
+|---|---|---|
+| r1 | first round (`f06bf20`) | before this round |
+| r2 | second round (`091cc68`) | before this round |
+| r3lib | this round | before this round |
+| r3 | this round | this round |
+
+### Findings
+
+The library's own frames are again a fraction of a percent of the samples: almost all the CPU time is
+in gRPC and protobuf. The largest costs found are not CPU time at all:
+
+1. **Every `pollFor()` that handled an event ended with a sleep of about 50 µs.** `[latency]` measured
+   57 µs for a 64-byte round trip, but a client that handles one event per `pollFor()` call needs about
+   6 µs. The difference was spent at the end of every `pollFor()`: after handling the response,
+   `processEvents()` asked the completion queue for further events with an expired deadline, found
+   none, and gRPC only reported that after about 50 µs. Where no further event came, as after the
+   response of a request–response exchange, that was pure delay: the caller could not send its next
+   request in the meantime.
+2. **Why an expired deadline waits.** In gRPC's default Linux polling engine (epoll1) only one thread of
+   the process at a time, the *designated poller*, waits in `epoll_wait`. Any other thread that calls
+   `AsyncNext` becomes a worker that waits on its own condition variable until it is kicked or its
+   deadline passes (`begin_worker()` in `ev_epoll1_linux.cc`). For an expired deadline, `gpr_cv_wait()`
+   computes a timeout of zero and calls Abseil's `CondVar::WaitWithTimeout()`, which still makes a
+   `futex` system call, with a zero relative timeout. Linux extends every timer of a thread by its
+   *timer slack*, 50 µs by default (`/proc/self/timerslack_ns`), so the call returns about 50 µs later
+   unless an event arrives first. The evidence:
+   - `poll()` of an idle stream took 50.0 µs per call, whatever the stream type.
+   - With the client thread's timer slack set to 1 ns (`prctl(PR_SET_TIMERSLACK, 1)`), it took 10.9 µs:
+     the rest is the context switch and the core waking up.
+   - Over TCP to a server in another process, `poll()` of an idle stream took 0.6 µs while the client
+     thread was the only thread polling (it is then the designated poller and calls `epoll_wait` with a
+     zero timeout), and 50 µs as soon as a second thread polled another stream. A 64-byte ping-pong then
+     took 79 µs with the draining `pollFor()` and 26 µs with one event per call.
+   - In the benchmarks and tests, the threads of the in-process synchronous server poll completion
+     queues of the same process, so the client thread is never the designated poller.
+
+   Any process with more than one thread polling gRPC completion queues is affected: two streams with a
+   dedicated thread each (the pattern this library recommends), or a client next to a gRPC server.
+3. **An idle `AsyncWriteStream` paid the same 50 µs per `poll()`**, although with no operation
+   outstanding no event can arrive.
+4. **The benchmark's heap tracker contended between threads.** In the CPU-bound load profile, the
+   tracker's atomic updates took about 10 % of all samples: its three counters shared one cache line,
+   updated by every allocation of the benchmark thread and of the gRPC threads alike. Without heap
+   tracking, a `sendRequest()` of the producer loop cost 87 ns instead of 140 ns in that scenario
+   (300 000 requests, no server delay).
+
+Two things looked similar but are outside the library:
+
+- A `poll()` of a stream with a read outstanding (every `AsyncReadStream` and `AsyncReadWriteStream`)
+  has to ask the completion queue, so with nothing to deliver it still takes about 50 µs in such a
+  process. That is the cost of a non-blocking check in gRPC, not of the library.
+- A client-streaming call with one request took 66 µs. With the timer slack of the in-process server's
+  threads set to 1 ns it took 27 µs, while lowering the client's changed nothing: the synchronous test
+  server waits on its own completion queues the same way.
+
+### Changes
+
+**`pollFor()` processes one event per call by default.** `max_events` now defaults to 1 for `pollFor()`
+of all three streams (it stays 64 for `poll()`). The first `AsyncNext` of a call waits for an event with
+the caller's deadline, which is what `pollFor()` is for; no further `AsyncNext` follows, so no call ends
+with a check that finds nothing. The loop around `pollFor()` takes the following events, and a further
+call returns at once while one is already queued. Since every stream has its own completion queue with at
+most one read and one write outstanding, no more than a few events can be waiting at the same time, and
+nothing is lost by taking them one per call. `pollFor()` with `max_events > 1` keeps the previous
+behaviour for callers that want it.
+
+**No `AsyncNext` without an outstanding operation.** `processEvents()` stops, and `poll()` returns at
+once, when no start-call, read, write, half-close or `Finish` is outstanding, since no event can arrive.
+A `pollFor()` still waits until its deadline then, so that a loop around it keeps its pace instead of
+spinning.
+
+**Heap tracker.** Each counter of `MemoryTracker.cpp` has a cache line of its own (128-byte alignment,
+which also covers the adjacent-line prefetch of x86 and the 128-byte lines of Apple silicon), and the
+allocation count is kept per thread and added to the shared counter in batches of 64. The live and peak
+bytes stay exact; the allocation count, which no benchmark reports, lags by less than 64 per thread.
+
+**Tests and benchmarks.** `[lifecycle]` checks that `pollFor()` processes one of two available events per
+call, and `[write-stream]` that 1000 `poll()` calls of an idle write stream next to the in-process server
+take well under 25 ms (they took 50 ms before). Both tests fail with the previous headers. The new
+`[poll]` benchmark measures `poll()` with nothing to process.
+
+### Results
+
+**Latency and polling** (medians of 5 interleaved runs of 30 samples):
+
+| Benchmark | r1 | r2 | r3lib | r3 |
+|---|---:|---:|---:|---:|
+| ping-pong round trip, 64 B | 57.1 µs | 56.5 µs | 6.8 µs | **6.4 µs** |
+| ping-pong round trip, 16 KiB | 62.1 µs | 61.4 µs | 8.4 µs | **8.8 µs** |
+| `poll()` of an idle write stream | 50.6 µs | 50.5 µs | 2.5 ns | **2.5 ns** |
+| `poll()` of an idle bidirectional stream (read outstanding) | 49.1 µs | 50.0 µs | 49.5 µs | 50.0 µs |
+
+The round trip is about nine times faster: the client now returns from `pollFor()` as soon as it has
+handled the response, instead of first waiting about 50 µs for a further event that never comes. The
+idle bidirectional stream shows what remains: a `poll()` with a read outstanding has to ask gRPC, which
+takes the timer slack in a process with other polling threads.
+
+**Throughput** (medians of 5 interleaved runs of 30 samples; one call per batch for `[read]` and
+`[write]`):
+
+| Benchmark | r1 | r2 | r3lib | r3 |
+|---|---:|---:|---:|---:|
+| 1000 pipelined echoes × 64 B | 3.30 ms | 3.29 ms | 3.53 ms | 3.34 ms |
+| 1000 pipelined echoes × 1 KiB | 3.24 ms | 3.24 ms | 3.63 ms | 3.11 ms |
+| 1000 pipelined echoes × 16 KiB | 3.53 ms | 3.60 ms | 3.44 ms | 3.59 ms |
+| `[read]` 1000 responses × 64 B | 2.48 ms | 2.50 ms | 2.58 ms | 2.43 ms |
+| `[read]` 1000 responses × 1 KiB | 2.41 ms | 2.43 ms | 2.35 ms | 2.33 ms |
+| `[read]` 1000 responses × 16 KiB | 3.13 ms | 2.99 ms | 2.96 ms | 2.97 ms |
+| `[write]` 1000 requests × 64 B | 1.99 ms | 2.08 ms | 2.02 ms | 1.96 ms |
+| `[write]` 1000 requests × 1 KiB | 1.91 ms | 2.04 ms | 2.01 ms | 2.00 ms |
+| `[write]` 1000 requests × 16 KiB | 2.47 ms | 2.62 ms | 2.57 ms | 2.57 ms |
+
+Streaming throughput did not change beyond the noise: while events keep coming, the final check of the
+old `pollFor()` was mostly cut short by the next event, and handling one event per call costs one more
+`AsyncNext` deadline computation per event. A focused run (8 interleaved runs of r2, r3lib and r3) put the cost of
+taking one event per call at about 4 % for 64-byte and 1 KiB echoes, where an event arrives every
+1.5 µs and each needs one more call with its deadline computation; 16 KiB echoes were not slower. The
+first campaign's 7 to 12 % for r3lib was noise on top of that.
+
+**Queue operations** (`[queue]`, medians of 5 interleaved runs of 100 samples): 13.0 / 2.9 / 34.1 ns for
+enqueue / drop newest / evict + enqueue with r3, the same as r2: this round did not touch the queue.
+
+**Heavy load** (`[load]`, default parameters: 50 000 × 1 KiB against a server taking one request per
+≥ 20 µs; medians of 3 runs): written and dropped counts, peak queue, peak heap (1.10 MiB default queue,
+0.28 MiB for the 256-message queues, 53.65 MiB unbounded), drain times and latencies are identical across
+r1, r2, r3lib and r3 within a few tenths of a percent. The producer calls `poll()`, which still drains,
+and the slow server sets the pace, so neither the polling changes nor the tracker show there.
+
+**CPU-bound load** (300 000 × 1 KiB, no server delay; medians of 4 runs), mean `sendRequest()` cost:
+
+| Write queue | r1 | r2 | r3lib | r3 |
+|---|---:|---:|---:|---:|
+| default (1024 msgs / 64 MiB, drop oldest) | 141.5 ns | 132.0 ns | 136.5 ns | **126.0 ns** |
+| 256 msgs, drop oldest | 141.0 ns | 133.0 ns | 131.5 ns | **127.0 ns** |
+| 256 msgs, drop newest | 137.5 ns | 130.5 ns | 130.0 ns | **124.0 ns** |
+| 256 KiB, drop oldest | 140.5 ns | 133.0 ns | 132.5 ns | **127.5 ns** |
+| unbounded | 348.5 ns | 336.0 ns | 337.0 ns | **330.0 ns** |
+
+The second round's write path saves 6 to 9 ns per send here, and the tracker change (r3lib → r3) about
+5 ns more; the rest of the gap to an untracked build (about 87 ns) is the exact live and peak counters.
+
+**Memory** is unchanged by this round: the heap figures of every `[load]` configuration are the same for
+r2 and r3, and the stream objects have the same size.
+
+**Correctness.** All 90 tests pass with GCC 15.2 in Release, RelWithDebInfo, Debug and RelWithSanitizers
+(ASan, UBSan and LSan, assertions enabled), and every benchmark runs cleanly in the sanitizer build. The
+changed sources also compile with Clang 21 and the project's warning flags (`-Werror`). MSVC and Apple
+Clang are covered by CI.
+
+### Not changed
+
+- **`poll()` still drains.** A loop that calls `poll()` once per frame relies on it processing everything
+  that has arrived, so its final check, and its cost in a process with other polling threads, remain.
+  [README.md](../README.md#polling) explains the trade-off and the timer-slack setting.
+- **Lowering the timer slack inside the library.** Setting the polling thread's slack to 1 ns around the
+  non-blocking `AsyncNext` calls (`prctl(PR_SET_TIMERSLACK)`) cut the empty check from 50 µs to about
+  11 µs here. It was not done: it changes a thread attribute behind the caller's back, costs two system
+  calls per poll, and is Linux-specific; an application that wants it can set it for its polling thread.
+- **Stopping a drain after an event that was waited for.** Timing each `AsyncNext` and ending a `poll()`
+  after one that took longer than a few microseconds would keep it from waiting for event after event
+  while they trickle in, but the threshold is arbitrary: deserializing a large message takes longer than
+  a short wait.
+- **`WriteLast`.** Merging the last queued request with the half-close would save one operation per
+  call; the one-request client-streaming call above spends most of its 66 µs in the test server, so the
+  gain could not be shown with this test setup.
+- **The synchronous test server** lingers in gRPC's completion queues in the same way. That affects how
+  fast calls end in the benchmarks, not the library.
 
 ## Reproducing
 
@@ -330,4 +558,16 @@ For a CPU-bound profile of the load scenario:
 $env:GRPC_ASYNC_STREAM_BENCH_MESSAGES = 1500000
 $env:GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US = 0
 .\build-conan-relwithdebinfo\benchmarks\GrpcAsyncStreamBenchmarks.exe "[load]"
+```
+
+On Linux (third round), pinned to the cores of one CCD:
+
+```bash
+cmake --workflow --preset conan-release
+B=./build-conan-release/benchmarks/GrpcAsyncStreamBenchmarks
+taskset -c 8-15 $B "[latency],[poll]" --benchmark-samples 30
+taskset -c 8-15 $B "[throughput],[read],[write]" --benchmark-samples 30
+taskset -c 8-15 $B "[queue]" --benchmark-samples 100 --benchmark-warmup-time 300
+taskset -c 8-15 $B "[load]"
+cat /proc/self/timerslack_ns   # the timer slack of a thread, 50000 ns by default
 ```

@@ -406,17 +406,21 @@ public:
 
     // Non-blocking processing of up to max_events currently available stream
     // events. Returns false once the call has ended (status() then holds the
-    // reason), true otherwise.
+    // reason), true otherwise. Returns at once while no operation is
+    // outstanding (an idle stream).
     bool poll(std::size_t max_events = 64)
     {
         return this->processEvents(eventHandler(), max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
     }
 
-    // Like poll(), but waits up to `timeout` for the first event, which avoids
-    // busy polling in a dedicated stream thread. Further already available
-    // events are processed without waiting.
+    // Waits up to `timeout` for the next event and processes it, which avoids
+    // busy polling in a dedicated stream thread; returns like poll(). With
+    // max_events > 1, further events already available are processed in the
+    // same call, but finding out that none is left can delay the return (see
+    // AsyncReadStream::pollFor()), so by default the loop calling pollFor()
+    // takes them: the next call returns at once with an available event.
     template<typename Rep, typename Period>
-    bool pollFor(std::chrono::duration<Rep, Period> timeout, std::size_t max_events = 64)
+    bool pollFor(std::chrono::duration<Rep, Period> timeout, std::size_t max_events = 1)
     {
         return this->processEvents(eventHandler(), max_events, Base::deadlineAfter(timeout));
     }

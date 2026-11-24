@@ -105,18 +105,28 @@ public:
     // events. Received responses are passed one by one to the response handler,
     // which may call any member function, including close(). Returns false once
     // the call has ended (status() then holds the reason), true otherwise.
+    // When no event is available, gRPC may take up to the thread's timer slack
+    // to report it (see pollFor()).
     template<ResponseHandlerFor<ResponseProto> ResponseHandler>
     bool poll(ResponseHandler&& response_handler, std::size_t max_events = 64)
     {
         return this->processEvents(eventHandler(response_handler), max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
     }
 
-    // Like poll(), but waits up to `timeout` for the first event, which avoids
-    // busy polling in a dedicated stream thread. Further already available
-    // events are processed without waiting.
+    // Waits up to `timeout` for the next event and processes it, which avoids
+    // busy polling in a dedicated stream thread; returns like poll().
+    //
+    // One event per call by default: the loop calling pollFor() takes the
+    // following ones, and the next call returns at once with an event that is
+    // already available. With max_events > 1, the further available events are
+    // processed in the same call, but finding out that none is left is not
+    // free: when another thread of the process polls a gRPC completion queue
+    // (a gRPC server, the thread of another stream), gRPC then waits up to the
+    // thread's timer slack (50 us by default on Linux) before returning, which
+    // would delay whatever the caller does next, such as sending a request.
     template<ResponseHandlerFor<ResponseProto> ResponseHandler, typename Rep, typename Period>
     bool pollFor(ResponseHandler&& response_handler, std::chrono::duration<Rep, Period> timeout,
-                 std::size_t max_events = 64)
+                 std::size_t max_events = 1)
     {
         return this->processEvents(eventHandler(response_handler), max_events, Base::deadlineAfter(timeout));
     }

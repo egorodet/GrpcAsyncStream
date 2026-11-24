@@ -5,6 +5,7 @@
 //  [read]        server-streaming receive throughput of AsyncReadStream
 //  [write]       client-streaming send throughput of AsyncWriteStream
 //  [queue]       cost of sendRequest() for queueing, dropping and evicting requests
+//  [poll]        cost of poll() when no event is available
 //  [load]        heavy load against a slow server: memory consumption (C++ heap and
 //                RSS), queue occupancy, drop counts, send / drain timings and
 //                end-to-end latency for bounded and unbounded write queues
@@ -419,6 +420,45 @@ TEST_CASE("Cost of sendRequest() on the write queue", "[!benchmark][benchmark][q
         std::vector<Request> requests(static_cast<std::size_t>(meter.runs()), request);
         meter.measure([&](int i) { return stream.sendRequest(std::move(requests[static_cast<std::size_t>(i)])); });
     };
+}
+
+TEST_CASE("Cost of poll() when no event is available", "[!benchmark][benchmark][poll]")
+{
+    // The in-process server's threads poll completion queues of this process,
+    // as the threads of other streams or of a gRPC server would in an
+    // application. See docs/Optimizations.md (third round) for why that matters.
+    TestServer server;
+    const auto stub = server.makeStub();
+
+    {
+        // No operation outstanding: no event can arrive
+        proto::UploadSummary                  summary;
+        grpc_utils::AsyncWriteStream<Request> stream;
+        REQUIRE(stream.open([&](grpc::ClientContext* context, grpc::CompletionQueue* cq, void* tag) {
+            return stub->AsyncUpload(context, &summary, cq, tag);
+        }));
+        REQUIRE(pollUntil(stream, [&] { return !stream.isWriteInProgress(); }));
+
+        BENCHMARK("idle write stream")
+        {
+            return stream.poll();
+        };
+    }
+
+    {
+        // The read is always outstanding: poll() has to ask the completion queue
+        Stream stream;
+        REQUIRE(stream.open([&](grpc::ClientContext* context, grpc::CompletionQueue* cq, void* tag) {
+            return stub->AsyncChat(context, cq, tag);
+        }));
+        auto handler = [](Response&&) {};
+        REQUIRE(pollUntil(stream, handler, [&] { return !stream.isWriteInProgress(); }));
+
+        BENCHMARK("idle bidirectional stream")
+        {
+            return stream.poll(handler);
+        };
+    }
 }
 
 TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queues", "[!benchmark][benchmark][load]")

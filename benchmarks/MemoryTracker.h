@@ -25,7 +25,8 @@ struct HeapCounters
 {
     std::int64_t  live_bytes  = 0; // C++ heap bytes currently allocated
     std::int64_t  peak_bytes  = 0; // high-water mark of live_bytes since the last resetPeak()
-    std::uint64_t allocations = 0; // number of allocations since program start
+    std::uint64_t allocations = 0; // number of allocations since program start, counted per thread
+                                   // in batches of 64: lags by less than 64 per thread
 };
 
 // True when operator new / delete are instrumented in this build

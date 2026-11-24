@@ -243,6 +243,28 @@ TEST_CASE("poll() and pollFor() of an idle write stream keep it open", "[write-s
     f.checkNoViolations();
 }
 
+TEST_CASE("poll() of an idle write stream does not wait for the completion queue", "[write-stream][integration]")
+{
+    // With no operation outstanding no event can arrive, so poll() returns at
+    // once. Asking the completion queue anyway would take up to the timer slack
+    // (50 us by default on Linux) per call here, because the server's threads
+    // poll completion queues of the same process.
+    UploadFixture f;
+    REQUIRE(f.open());
+    REQUIRE(pollUntil(f.stream, [&] { return !f.stream.isWriteInProgress(); }));
+
+    bool       open    = true;
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < 1000; ++i)
+        open = f.stream.poll() && open;
+    CHECK(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(25));
+    CHECK(open);
+
+    REQUIRE(f.stream.writesDone());
+    REQUIRE(f.finish());
+    CHECK(f.stream.status().ok());
+}
+
 TEST_CASE("writesDone() flushes the queue, half-closes and then requests the response", "[write-stream]")
 {
     FakeWriteFixture f;
