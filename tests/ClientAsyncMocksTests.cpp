@@ -197,6 +197,44 @@ TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]
     cq.Shutdown();
 }
 
+TEST_CASE("Mocks expose the written requests", "[mocks]")
+{
+    grpc::CompletionQueue cq;
+    int                   tag = 0;
+
+    SECTION("bidirectional mock")
+    {
+        BidiMock mock(&cq);
+        CHECK(mock.writtenRequests().empty());
+        mock.StartCall(&tag);
+        mock.call().completeStart();
+        mock.Write(makeRequest(1), &tag);
+        mock.call().completeWrite();
+        mock.Write(makeRequest(2), grpc::WriteOptions(), &tag);
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
+        CHECK(&mock.writtenRequests() == &mock.call().writes());
+    }
+    SECTION("client-streaming mock")
+    {
+        WriterMock mock(&cq);
+        CHECK(mock.writtenRequests().empty());
+        mock.StartCall(&tag);
+        mock.call().completeStart();
+        mock.Write(makeRequest(3), &tag);
+        mock.call().completeWrite();
+        mock.Write(makeRequest(4), grpc::WriteOptions(), &tag);
+        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
+        CHECK(&mock.writtenRequests() == &mock.call().writes());
+    }
+    // Drain the completions posted by the mock before the queue is destroyed
+    cq.Shutdown();
+    void* event_tag = nullptr;
+    bool  ok        = false;
+    while (cq.Next(&event_tag, &ok))
+    {
+    }
+}
+
 TEST_CASE("Derived bidirectional mock echoes the requests through enqueueResponse", "[mocks]")
 {
     EchoMock*             mock = nullptr;

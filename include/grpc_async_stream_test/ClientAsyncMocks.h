@@ -63,6 +63,7 @@
 #include <memory>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace grpc_async_stream_test
 {
@@ -184,6 +185,11 @@ public:
     void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
     void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
     void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+
+    // The requests passed to Write() so far, in order (also available through
+    // call().writes(), which outlives the mock when kept with sharedCall())
+    [[nodiscard]] const std::vector<W>& writtenRequests() const noexcept { return this->call().writes(); }
+
     void Read(R* msg, void* tag) override
     {
         this->call().onRead(msg, tag);
@@ -212,6 +218,10 @@ public:
     void WritesDone(void* tag) override { this->call().onWritesDone(tag); }
     void Write(const W& msg, void* tag) override { this->call().onWrite(msg, tag); }
     void Write(const W& msg, grpc::WriteOptions /*options*/, void* tag) override { this->call().onWrite(msg, tag); }
+
+    // The requests passed to Write() so far, in order (also available through
+    // call().writes(), which outlives the mock when kept with sharedCall())
+    [[nodiscard]] const std::vector<W>& writtenRequests() const noexcept { return this->call().writes(); }
 };
 
 // Mock of grpc::ClientAsyncReaderInterface<R> for server-streaming calls
