@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Tests of the extensible client stream mocks (grpc_async_stream_test/ClientAsyncMocks.h):
 // the mocks used as they are and through derived mocks that change the default
 // behaviour (start-call completed right away or failing, echoed and scripted

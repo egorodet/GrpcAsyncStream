@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Deterministic tests of the AsyncReadWriteStream state machine driven through
 // a fake ClientAsyncReaderWriterInterface (see grpc_async_stream_test/FakeReaderWriter.h).
 

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Tests of AsyncReadStream, the wrapper over server-streaming calls: the state
 // machine driven through a fake ClientAsyncReaderInterface (see
 // grpc_async_stream_test/FakeReaderWriter.h), the composition of the three stream

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // Tests of the bounded write queue: message / byte limits, overflow policies,
 // statistics and memory bounds under a flood of requests.
 

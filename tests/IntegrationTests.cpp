@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Evgeny Gorodetskiy
+// SPDX-License-Identifier: MIT
+// Licensed under the MIT License. See the LICENSE file in the project root for details.
+
 // End-to-end tests of AsyncReadWriteStream against a real gRPC server running
 // in-process (see support/TestServer.h).
 
