@@ -64,6 +64,12 @@ include(GNUInstallDirs)
 # Dependencies
 # ---------------------------------------------------------------------------
 
+# The cmake-conan provider of the conan-* presets passes the project's compilers to
+# Conan, which builds the C dependencies (zlib, c-ares, ...) when they are missing
+if(GRPC_ASYNC_STREAM_IS_TOP_LEVEL AND CMAKE_PROJECT_TOP_LEVEL_INCLUDES MATCHES "conan_provider\\.cmake")
+    enable_language(C)
+endif()
+
 include(Dependencies)
 
 # ---------------------------------------------------------------------------

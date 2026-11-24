@@ -9,7 +9,6 @@
         {
             "name": "base",
             "hidden": true,
-            "description": "Ninja build in build-<preset>; on Windows run from a Visual Studio developer environment (x64)",
             "generator": "Ninja",
             "binaryDir": "${sourceDir}/build-${presetName}",
             "architecture": {
@@ -21,63 +20,175 @@
             }
         },
         {
-            "name": "release",
+            "name": "cpm",
+            "hidden": true,
             "inherits": "base",
-            "displayName": "Release",
-            "description": "Optimized build without debug information",
+            "description": "Dependencies built from source with CPM.cmake (set CPM_SOURCE_CACHE to share the downloads)",
+            "cacheVariables": {
+                "GRPC_ASYNC_STREAM_GRPC_PROVIDER": "fetch"
+            }
+        },
+        {
+            "name": "conan",
+            "hidden": true,
+            "inherits": "base",
+            "description": "Dependencies from Conan 2, installed during configuration by the cmake-conan provider",
+            "cacheVariables": {
+                "CMAKE_PROJECT_TOP_LEVEL_INCLUDES": "${sourceDir}/cmake/conan_provider.cmake",
+                "GRPC_ASYNC_STREAM_GRPC_PROVIDER": "package"
+            },
+            "environment": {
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5"
+            }
+        },
+        {
+            "name": "config-release",
+            "hidden": true,
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
         },
         {
-            "name": "relwithdebinfo",
-            "inherits": "base",
-            "displayName": "RelWithDebInfo",
-            "description": "Optimized build with debug information",
+            "name": "config-relwithdebinfo",
+            "hidden": true,
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo"
             }
         },
         {
-            "name": "relwithsanitizers",
-            "inherits": "base",
-            "displayName": "RelWithSanitizers",
-            "description": "RelWithDebInfo with the sanitizers of the toolchain: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC",
+            "name": "config-relwithsanitizers",
+            "hidden": true,
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "RelWithDebInfo",
                 "GRPC_ASYNC_STREAM_ENABLE_SANITIZERS": "ON"
             }
         },
         {
-            "name": "debug",
-            "inherits": "base",
-            "displayName": "Debug",
-            "description": "Unoptimized build with debug information",
+            "name": "config-debug",
+            "hidden": true,
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug"
             }
+        },
+        {
+            "name": "cpm-release",
+            "inherits": [
+                "cpm",
+                "config-release"
+            ],
+            "displayName": "Release (CPM)",
+            "description": "Optimized build without debug information"
+        },
+        {
+            "name": "cpm-relwithdebinfo",
+            "inherits": [
+                "cpm",
+                "config-relwithdebinfo"
+            ],
+            "displayName": "RelWithDebInfo (CPM)",
+            "description": "Optimized build with debug information"
+        },
+        {
+            "name": "cpm-relwithsanitizers",
+            "inherits": [
+                "cpm",
+                "config-relwithsanitizers"
+            ],
+            "displayName": "RelWithSanitizers (CPM)",
+            "description": "RelWithDebInfo with assertions and the sanitizers of the toolchain: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC"
+        },
+        {
+            "name": "cpm-debug",
+            "inherits": [
+                "cpm",
+                "config-debug"
+            ],
+            "displayName": "Debug (CPM)",
+            "description": "Unoptimized build with debug information"
+        },
+        {
+            "name": "conan-release",
+            "inherits": [
+                "conan",
+                "config-release"
+            ],
+            "displayName": "Release (Conan)",
+            "description": "Optimized build without debug information"
+        },
+        {
+            "name": "conan-relwithdebinfo",
+            "inherits": [
+                "conan",
+                "config-relwithdebinfo"
+            ],
+            "displayName": "RelWithDebInfo (Conan)",
+            "description": "Optimized build with debug information",
+            "cacheVariables": {
+                "CONAN_INSTALL_BUILD_CONFIGURATIONS": "Release"
+            }
+        },
+        {
+            "name": "conan-relwithsanitizers",
+            "inherits": [
+                "conan",
+                "config-relwithsanitizers"
+            ],
+            "displayName": "RelWithSanitizers (Conan)",
+            "description": "RelWithDebInfo with assertions and the sanitizers of the toolchain: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC",
+            "cacheVariables": {
+                "CONAN_INSTALL_BUILD_CONFIGURATIONS": "Release"
+            }
+        },
+        {
+            "name": "conan-debug",
+            "inherits": [
+                "conan",
+                "config-debug"
+            ],
+            "displayName": "Debug (Conan)",
+            "description": "Unoptimized build with debug information"
         }
     ],
     "buildPresets": [
         {
-            "name": "release",
-            "configurePreset": "release",
-            "displayName": "Release"
+            "name": "cpm-release",
+            "configurePreset": "cpm-release",
+            "displayName": "Release (CPM)"
         },
         {
-            "name": "relwithdebinfo",
-            "configurePreset": "relwithdebinfo",
-            "displayName": "RelWithDebInfo"
+            "name": "cpm-relwithdebinfo",
+            "configurePreset": "cpm-relwithdebinfo",
+            "displayName": "RelWithDebInfo (CPM)"
         },
         {
-            "name": "relwithsanitizers",
-            "configurePreset": "relwithsanitizers",
-            "displayName": "RelWithSanitizers"
+            "name": "cpm-relwithsanitizers",
+            "configurePreset": "cpm-relwithsanitizers",
+            "displayName": "RelWithSanitizers (CPM)"
         },
         {
-            "name": "debug",
-            "configurePreset": "debug",
-            "displayName": "Debug"
+            "name": "cpm-debug",
+            "configurePreset": "cpm-debug",
+            "displayName": "Debug (CPM)"
+        },
+        {
+            "name": "conan-release",
+            "configurePreset": "conan-release",
+            "displayName": "Release (Conan)"
+        },
+        {
+            "name": "conan-relwithdebinfo",
+            "configurePreset": "conan-relwithdebinfo",
+            "displayName": "RelWithDebInfo (Conan)"
+        },
+        {
+            "name": "conan-relwithsanitizers",
+            "configurePreset": "conan-relwithsanitizers",
+            "displayName": "RelWithSanitizers (Conan)"
+        },
+        {
+            "name": "conan-debug",
+            "configurePreset": "conan-debug",
+            "displayName": "Debug (Conan)"
         }
     ],
     "testPresets": [
@@ -99,33 +210,8 @@
             }
         },
         {
-            "name": "release",
-            "inherits": "tests",
-            "configurePreset": "release",
-            "displayName": "Release tests"
-        },
-        {
-            "name": "relwithdebinfo",
-            "inherits": "tests",
-            "configurePreset": "relwithdebinfo",
-            "displayName": "RelWithDebInfo tests"
-        },
-        {
-            "name": "relwithsanitizers",
-            "inherits": "tests",
-            "configurePreset": "relwithsanitizers",
-            "displayName": "RelWithSanitizers tests"
-        },
-        {
-            "name": "debug",
-            "inherits": "tests",
-            "configurePreset": "debug",
-            "displayName": "Debug tests"
-        },
-        {
-            "name": "release-benchmarks",
-            "configurePreset": "release",
-            "displayName": "Release benchmarks",
+            "name": "benchmarks",
+            "hidden": true,
             "description": "Heavy-load benchmark with its memory-bound checks",
             "output": {
                 "outputOnFailure": true
@@ -138,43 +224,247 @@
             "execution": {
                 "noTestsAction": "error"
             }
+        },
+        {
+            "name": "cpm-release",
+            "inherits": "tests",
+            "configurePreset": "cpm-release",
+            "displayName": "Release (CPM) tests"
+        },
+        {
+            "name": "cpm-release-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "cpm-release",
+            "displayName": "Release (CPM) benchmarks"
+        },
+        {
+            "name": "cpm-relwithdebinfo",
+            "inherits": "tests",
+            "configurePreset": "cpm-relwithdebinfo",
+            "displayName": "RelWithDebInfo (CPM) tests"
+        },
+        {
+            "name": "cpm-relwithdebinfo-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "cpm-relwithdebinfo",
+            "displayName": "RelWithDebInfo (CPM) benchmarks"
+        },
+        {
+            "name": "cpm-relwithsanitizers",
+            "inherits": "tests",
+            "configurePreset": "cpm-relwithsanitizers",
+            "displayName": "RelWithSanitizers (CPM) tests"
+        },
+        {
+            "name": "cpm-relwithsanitizers-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "cpm-relwithsanitizers",
+            "displayName": "RelWithSanitizers (CPM) benchmarks"
+        },
+        {
+            "name": "cpm-debug",
+            "inherits": "tests",
+            "configurePreset": "cpm-debug",
+            "displayName": "Debug (CPM) tests"
+        },
+        {
+            "name": "cpm-debug-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "cpm-debug",
+            "displayName": "Debug (CPM) benchmarks"
+        },
+        {
+            "name": "conan-release",
+            "inherits": "tests",
+            "configurePreset": "conan-release",
+            "displayName": "Release (Conan) tests"
+        },
+        {
+            "name": "conan-release-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "conan-release",
+            "displayName": "Release (Conan) benchmarks"
+        },
+        {
+            "name": "conan-relwithdebinfo",
+            "inherits": "tests",
+            "configurePreset": "conan-relwithdebinfo",
+            "displayName": "RelWithDebInfo (Conan) tests"
+        },
+        {
+            "name": "conan-relwithdebinfo-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "conan-relwithdebinfo",
+            "displayName": "RelWithDebInfo (Conan) benchmarks"
+        },
+        {
+            "name": "conan-relwithsanitizers",
+            "inherits": "tests",
+            "configurePreset": "conan-relwithsanitizers",
+            "displayName": "RelWithSanitizers (Conan) tests"
+        },
+        {
+            "name": "conan-relwithsanitizers-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "conan-relwithsanitizers",
+            "displayName": "RelWithSanitizers (Conan) benchmarks"
+        },
+        {
+            "name": "conan-debug",
+            "inherits": "tests",
+            "configurePreset": "conan-debug",
+            "displayName": "Debug (Conan) tests"
+        },
+        {
+            "name": "conan-debug-benchmarks",
+            "inherits": "benchmarks",
+            "configurePreset": "conan-debug",
+            "displayName": "Debug (Conan) benchmarks"
         }
     ],
     "workflowPresets": [
         {
-            "name": "release",
-            "displayName": "Release: configure, build, test",
+            "name": "cpm-release",
+            "displayName": "Release (CPM): configure, build, test",
             "steps": [
-                { "type": "configure", "name": "release" },
-                { "type": "build", "name": "release" },
-                { "type": "test", "name": "release" }
+                {
+                    "type": "configure",
+                    "name": "cpm-release"
+                },
+                {
+                    "type": "build",
+                    "name": "cpm-release"
+                },
+                {
+                    "type": "test",
+                    "name": "cpm-release"
+                }
             ]
         },
         {
-            "name": "relwithdebinfo",
-            "displayName": "RelWithDebInfo: configure, build, test",
+            "name": "cpm-relwithdebinfo",
+            "displayName": "RelWithDebInfo (CPM): configure, build, test",
             "steps": [
-                { "type": "configure", "name": "relwithdebinfo" },
-                { "type": "build", "name": "relwithdebinfo" },
-                { "type": "test", "name": "relwithdebinfo" }
+                {
+                    "type": "configure",
+                    "name": "cpm-relwithdebinfo"
+                },
+                {
+                    "type": "build",
+                    "name": "cpm-relwithdebinfo"
+                },
+                {
+                    "type": "test",
+                    "name": "cpm-relwithdebinfo"
+                }
             ]
         },
         {
-            "name": "relwithsanitizers",
-            "displayName": "RelWithSanitizers: configure, build, test",
+            "name": "cpm-relwithsanitizers",
+            "displayName": "RelWithSanitizers (CPM): configure, build, test",
             "steps": [
-                { "type": "configure", "name": "relwithsanitizers" },
-                { "type": "build", "name": "relwithsanitizers" },
-                { "type": "test", "name": "relwithsanitizers" }
+                {
+                    "type": "configure",
+                    "name": "cpm-relwithsanitizers"
+                },
+                {
+                    "type": "build",
+                    "name": "cpm-relwithsanitizers"
+                },
+                {
+                    "type": "test",
+                    "name": "cpm-relwithsanitizers"
+                }
             ]
         },
         {
-            "name": "debug",
-            "displayName": "Debug: configure, build, test",
+            "name": "cpm-debug",
+            "displayName": "Debug (CPM): configure, build, test",
             "steps": [
-                { "type": "configure", "name": "debug" },
-                { "type": "build", "name": "debug" },
-                { "type": "test", "name": "debug" }
+                {
+                    "type": "configure",
+                    "name": "cpm-debug"
+                },
+                {
+                    "type": "build",
+                    "name": "cpm-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "cpm-debug"
+                }
+            ]
+        },
+        {
+            "name": "conan-release",
+            "displayName": "Release (Conan): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "conan-release"
+                },
+                {
+                    "type": "build",
+                    "name": "conan-release"
+                },
+                {
+                    "type": "test",
+                    "name": "conan-release"
+                }
+            ]
+        },
+        {
+            "name": "conan-relwithdebinfo",
+            "displayName": "RelWithDebInfo (Conan): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "conan-relwithdebinfo"
+                },
+                {
+                    "type": "build",
+                    "name": "conan-relwithdebinfo"
+                },
+                {
+                    "type": "test",
+                    "name": "conan-relwithdebinfo"
+                }
+            ]
+        },
+        {
+            "name": "conan-relwithsanitizers",
+            "displayName": "RelWithSanitizers (Conan): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "conan-relwithsanitizers"
+                },
+                {
+                    "type": "build",
+                    "name": "conan-relwithsanitizers"
+                },
+                {
+                    "type": "test",
+                    "name": "conan-relwithsanitizers"
+                }
+            ]
+        },
+        {
+            "name": "conan-debug",
+            "displayName": "Debug (Conan): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "conan-debug"
+                },
+                {
+                    "type": "build",
+                    "name": "conan-debug"
+                },
+                {
+                    "type": "test",
+                    "name": "conan-debug"
+                }
             ]
         }
     ]

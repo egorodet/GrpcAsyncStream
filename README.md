@@ -559,37 +559,47 @@ ctest --test-dir build -LE benchmark --output-on-failure      # unit + integrati
 
 ### CMake presets
 
-[`CMakePresets.json`](CMakePresets.json) defines the same four configurations on Linux, macOS and Windows,
-all with the Ninja generator, each in its own build directory `build-<preset>`:
+[`CMakePresets.json`](CMakePresets.json) defines four build configurations, each in two families that differ
+only in where the dependencies come from. All of them use the Ninja generator on Linux, macOS and Windows,
+each in its own build directory `build-<preset>`:
 
-| Preset | `CMAKE_BUILD_TYPE` | Purpose |
-|---|---|---|
-| `release` | `Release` | Optimized, no debug information |
-| `relwithdebinfo` | `RelWithDebInfo` | Optimized, with debug information |
-| `relwithsanitizers` | `RelWithDebInfo` | `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON`: ASan + UBSan (+ LSan on Linux) with GCC/Clang, ASan with MSVC (see [memory checks](#platform-support-and-memory-checks)); debug information keeps the reports readable |
-| `debug` | `Debug` | Unoptimized, with debug information |
+| Configuration | `CMAKE_BUILD_TYPE` | CPM preset | Conan preset |
+|---|---|---|---|
+| Release: optimized, no debug information | `Release` | `cpm-release` | `conan-release` |
+| RelWithDebInfo: optimized, with debug information | `RelWithDebInfo` | `cpm-relwithdebinfo` | `conan-relwithdebinfo` |
+| RelWithSanitizers: `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON`, with assertions (see [memory checks](#platform-support-and-memory-checks)) | `RelWithDebInfo` | `cpm-relwithsanitizers` | `conan-relwithsanitizers` |
+| Debug: unoptimized, with debug information | `Debug` | `cpm-debug` | `conan-debug` |
 
-Every preset name works for configuring, building and testing, and as a workflow that runs all three
-(the test presets exclude the benchmarks; `release-benchmarks` runs them):
+- **`cpm-*`** build gRPC, protobuf, magic_enum and Catch2 from source with CPM
+  (`GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`), whatever is installed on the machine. They need nothing but
+  CMake, a compiler, Ninja and git; set `CPM_SOURCE_CACHE` to share the downloads between build directories.
+  The first build of each preset compiles gRPC (see below).
+- **`conan-*`** take the dependencies from [Conan 2](https://conan.io) ([`conanfile.py`](conanfile.py)):
+  the [cmake-conan](https://github.com/conan-io/cmake-conan) dependency provider
+  ([`cmake/conan_provider.cmake`](cmake/conan_provider.cmake), pinned) runs `conan install` during the
+  configure step, with a host profile derived from the CMake toolchain, and builds missing packages. They
+  need `conan` on `PATH`. `conan-relwithdebinfo` and `conan-relwithsanitizers` build this project as
+  RelWithDebInfo over the **Release** packages (`CONAN_INSTALL_BUILD_CONFIGURATIONS=Release`), so they reuse
+  the packages of `conan-release`; `conan-debug` installs Debug packages.
+
+Every preset name works for configuring, building and testing, and as a workflow that runs all three. The
+test presets exclude the benchmarks, which `<preset>-benchmarks` runs:
 
 ```bash
-cmake --workflow --preset release           # configure + build + unit and integration tests
+cmake --workflow --preset conan-release     # configure + build + unit and integration tests
 
-cmake --preset relwithsanitizers            # or step by step
-cmake --build --preset relwithsanitizers
-ctest --preset relwithsanitizers
-ctest --preset release-benchmarks           # heavy-load benchmark of the release build
+cmake --preset cpm-relwithsanitizers        # or step by step
+cmake --build --preset cpm-relwithsanitizers
+ctest --preset cpm-relwithsanitizers
+ctest --preset cpm-relwithsanitizers-benchmarks
 ```
 
-- The presets do not choose where gRPC comes from: the [dependency lookup](#requirements) uses
-  installed packages when found and builds gRPC with CPM otherwise. Add your own settings on the command
-  line, e.g. `cmake --preset debug -DCMAKE_PREFIX_PATH=/opt/grpc`, or in a `CMakeUserPresets.json` that
-  inherits from these presets.
+- Add your own settings on the command line (`cmake --preset cpm-debug -DGRPC_ASYNC_STREAM_GRPC_UNSECURE=OFF`)
+  or in a `CMakeUserPresets.json` that inherits from these presets, e.g. one with
+  `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package` and `CMAKE_PREFIX_PATH` for an installed gRPC.
 - On Windows, run the presets from a Visual Studio developer environment for x64 (see
   [Windows notes](#windows-notes)); Visual Studio and VS Code's CMake Tools set it up themselves from the
   presets' `architecture` (`x64`, external strategy).
-- Conan's generated `conan-release` presets (see below) live alongside these in `CMakeUserPresets.json` and
-  keep their own build directory `build/Release`.
 
 With an installed gRPC (e.g. Homebrew `brew install grpc`, vcpkg, or a custom prefix):
 
@@ -613,21 +623,27 @@ from the system when found, otherwise built.
 
 [`conanfile.py`](conanfile.py) declares all dependencies for [Conan 2](https://conan.io): gRPC 1.72.0
 (with protobuf), magic_enum 0.9.8 and Catch2 3.8.1. Conan's `CMakeDeps` generates package configs
-that the dependency lookup above finds, so nothing is fetched with CPM:
+that the dependency lookup above finds, so nothing is fetched with CPM. The `conan-*`
+[presets](#cmake-presets) run `conan install` themselves; the recipe also works on its own, with the
+toolchain it generates:
 
 ```bash
 conan install . --build=missing -s compiler.cppstd=20 -s build_type=Release
-cmake --preset conan-release
-cmake --build --preset conan-release
-ctest --preset conan-release -LE benchmark --output-on-failure
+cmake -S . -B build/Release -G Ninja -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake
+cmake --build build/Release
+ctest --test-dir build/Release -LE benchmark --output-on-failure
 ```
 
-- `-s compiler.cppstd=20` (or `gnu20`) is required and checked by the recipe: Abseil's ABI depends on the
+- `-s compiler.cppstd=20` (or `gnu20`) is required and checked by the recipe (the presets' provider takes it
+  from `CMAKE_CXX_STANDARD`): Abseil's ABI depends on the
   C++ standard, so gRPC, protobuf and Abseil must be built with the same standard as this project.
   Conan Center's prebuilt binaries mostly use C++17, so expect `--build=missing` to build gRPC once;
   Conan's package cache keeps it for later builds.
-- The generated preset sets `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package`, so a missing package is an error
-  rather than a silent fallback to building gRPC with CPM.
+- The generated toolchain and the `conan-*` presets set `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package`, so a
+  missing package is an error rather than a silent fallback to building gRPC with CPM.
+- The recipe does not generate a `CMakeUserPresets.json`: its preset names would clash with the `conan-*`
+  presets of the project. Delete one left by an earlier `conan install` if CMake reports duplicate presets.
 - Recipe options: `-o "&:with_tests=False"` (no Catch2, no tests or benchmarks), `-o "&:with_test_utils=False"`.
 - `protoc` and `grpc_cpp_plugin` come from the host packages in native builds. When cross-building, the
   recipe adds them as tool requirements; the lookup then finds them on `PATH` (Conan's build environment).
@@ -704,6 +720,8 @@ Notes:
   a `heap-buffer-overflow` in `CompletionQueue`'s constructor and crashes in `~ServerContextBase`.
   If your gRPC is itself built with `-fsanitize=address`, set `GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED=ON`.
   Product tests that use `GrpcAsyncStream::TestUtils` with ASan against a plain gRPC need the same define.
+- Sanitizer builds keep assertions active in every configuration: `NDEBUG` is removed from the Release,
+  RelWithDebInfo and MinSizeRel flags of this project's code (not of the dependencies).
 - Heap tracking replaces the global `operator new/delete`, which sanitizers also take over (and they
   quarantine freed memory), so it is off in sanitizer builds — both by CMake and by a compile-time
   check in `MemoryTracker.cpp`. The heavy-load benchmark then reports heap figures as `n/a`, still
@@ -717,21 +735,22 @@ Notes:
 ### Continuous integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the tests and the heavy-load benchmark on six
-configurations: Linux GCC, Linux Clang with ASan/UBSan/LSan, macOS Apple Clang (arm64) with and without
-ASan/UBSan, and Windows MSVC with and without ASan.
+configurations, each with a [preset](#cmake-presets): Linux GCC, macOS Apple Clang (arm64) and Windows MSVC
+with `conan-release`, and Linux Clang (ASan/UBSan/LSan), macOS Apple Clang (ASan/UBSan) and Windows MSVC
+(ASan) with `conan-relwithsanitizers`.
 
-- **Dependencies come from Conan** ([`conanfile.py`](conanfile.py)), not CPM, and the configure step fails
-  if anything is fetched with CPM. Conan Center has no prebuilt C++20 binaries of gRPC and Abseil (Abseil's
-  binaries are tied to the C++ standard they were built with), so the first run builds them once per
-  dependency set: Linux GCC, Linux Clang, macOS and Windows. The Conan package cache, keyed on the
-  detected compiler profile and `conanfile.py`, then lets every later run skip the gRPC build entirely.
-  Only finished packages are cached (build trees and sources are cleaned), to stay within the cache quota.
-- **Everything is built as Release**, because Conan's CMakeDeps ties libraries to the dependencies' own
-  build type. The sanitizer jobs override the Release flags of this project's code with `-O1 -g` (no
-  `NDEBUG`), so asserts stay active and stack traces stay readable, and they share their platform's
-  dependency set.
-- A seventh job, **Linux GCC (CPM fallback)**, keeps the no-package-manager path covered: it builds gRPC
-  from source with CPM, using ccache.
+- **Dependencies come from Conan** ([`conanfile.py`](conanfile.py)), installed by the presets' provider
+  during the configure step, and the configure step fails if anything is fetched with CPM. Conan Center has
+  no prebuilt C++20 binaries of gRPC and Abseil (Abseil's binaries are tied to the C++ standard they were
+  built with), so the first run builds them once per dependency set: Linux GCC, Linux Clang, macOS and
+  Windows. The Conan package cache, keyed on the detected compiler profile and `conanfile.py`, then lets
+  every later run skip the gRPC build entirely. Only finished packages are cached (build trees and sources
+  are cleaned), to stay within the cache quota.
+- **The dependencies are always Release packages.** `conan-relwithsanitizers` builds this project as
+  RelWithDebInfo over them, with assertions kept active and debug information for readable stack traces,
+  so each sanitizer job shares its platform's dependency set.
+- A seventh job, **Linux GCC (CPM)**, keeps the no-package-manager path covered with `cpm-release`: it
+  builds gRPC from source with CPM, using ccache.
 
 ---
 
@@ -769,7 +788,7 @@ ctest --test-dir build -LE benchmark --output-on-failure
 ./build/tests/GrpcAsyncStreamTests --list-tests
 ```
 
-Sanitizer build: `cmake --workflow --preset relwithsanitizers`, or `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
+Sanitizer build: `cmake --workflow --preset conan-relwithsanitizers` (or `cpm-relwithsanitizers`), or `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
 (the sanitizers and their runtime options are chosen per platform, see the table above; CTest passes the options).
 
 ---
@@ -938,11 +957,12 @@ target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
 GrpcAsyncStream/
 ├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
-├── CMakePresets.json                 # release / relwithdebinfo / relwithsanitizers / debug presets
+├── CMakePresets.json                 # cpm-* and conan-* presets: release, relwithdebinfo, relwithsanitizers, debug
 ├── conanfile.py                      # Conan 2 recipe for the dependencies (optional)
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
 │   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
+│   ├── conan_provider.cmake          # cmake-conan dependency provider of the conan-* presets (pinned)
 │   ├── Dependencies.cmake            # gRPC, magic_enum, Catch2: imported targets, packages (Conan, …) or CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in

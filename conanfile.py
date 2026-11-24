@@ -2,12 +2,17 @@
 
 The CMake project uses dependencies that are already imported or found as packages
 before falling back to building them with CPM (see cmake/Dependencies.cmake), so
-with this recipe gRPC, protobuf, magic_enum and Catch2 all come from Conan:
+with this recipe gRPC, protobuf, magic_enum and Catch2 all come from Conan.
+
+The conan-* presets of CMakePresets.json run `conan install` with this recipe
+automatically, through the cmake-conan dependency provider (cmake/conan_provider.cmake):
+
+    cmake --workflow --preset conan-release
+
+It also works on its own, with the generated toolchain:
 
     conan install . --build=missing -s compiler.cppstd=20
-    cmake --preset conan-release
-    cmake --build --preset conan-release
-    ctest --preset conan-release -LE benchmark
+    cmake -S . -B build/Release -G Ninja -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake           -DCMAKE_BUILD_TYPE=Release
 
 Options:
     with_tests       build this project's tests and benchmarks (requires Catch2)
@@ -75,6 +80,11 @@ class GrpcAsyncStreamConan(ConanFile):
         toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_TESTS"] = bool(self.options.with_tests)
         toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_BENCHMARKS"] = bool(self.options.with_tests)
         toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_TEST_UTILS"] = bool(self.options.with_test_utils)
+        # No CMakeUserPresets.json: the project's own conan-* presets (CMakePresets.json)
+        # use the same names as the presets Conan would generate
+        toolchain.user_presets_path = False
         toolchain.generate()
 
+        # cmake-conan's provider recommends the newer CMakeConfigDeps generator (and warns
+        # when this file does not mention it); CMakeDeps is kept for wider Conan support.
         CMakeDeps(self).generate()

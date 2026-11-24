@@ -87,6 +87,17 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
     else()
         message(WARNING "GrpcAsyncStream: sanitizers are not supported for ${CMAKE_CXX_COMPILER_ID}, option ignored")
     endif()
+
+    if(GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE)
+        # Sanitizer builds keep the assertions active in every configuration
+        # (e.g. the RelWithDebInfo of the relwithsanitizers presets). Included at
+        # directory scope: dependencies built earlier keep their flags.
+        foreach(config RELEASE RELWITHDEBINFO MINSIZEREL)
+            foreach(lang C CXX)
+                string(REGEX REPLACE "[-/]DNDEBUG" "" CMAKE_${lang}_FLAGS_${config} "${CMAKE_${lang}_FLAGS_${config}}")
+            endforeach()
+        endforeach()
+    endif()
 endif()
 
 # The benchmark's heap tracking replaces the global operator new/delete and asks

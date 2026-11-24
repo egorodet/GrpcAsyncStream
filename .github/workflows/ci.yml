@@ -10,17 +10,19 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# External dependencies (gRPC, protobuf, Abseil, magic_enum, Catch2) come from Conan
-# (conanfile.py), not from CPM. Conan Center has no prebuilt C++20 binaries of gRPC
-# and Abseil, so the first run of each dependency set builds them; the Conan package
-# cache then makes every later run skip that build completely.
+# Every job configures, builds and tests with a preset of CMakePresets.json.
 #
-# Each job's dependency set is identified by `deps`: jobs with the same set share
-# one cache entry. Everything is built as Release: Conan's CMakeDeps ties the
-# dependencies' libraries to their own build type, so mixing a Debug project with
-# Release dependencies is unreliable. Sanitizer jobs instead override the Release
-# flags of this project's code with `-O1 -g` (no NDEBUG): asserts stay active and
-# stack traces stay readable, while sharing the Release dependencies of the platform.
+# The conan-* presets take the external dependencies (gRPC, protobuf, Abseil,
+# magic_enum, Catch2) from Conan (conanfile.py): the cmake-conan provider
+# (cmake/conan_provider.cmake) runs `conan install` during the configure step, with
+# a host profile derived from the CMake toolchain. Conan Center has no prebuilt C++20
+# binaries of gRPC and Abseil, so the first run of each dependency set builds them;
+# the Conan package cache then makes every later run skip that build completely.
+#
+# Each job's dependency set is identified by `deps`: jobs with the same set share one
+# cache entry. The dependencies are always Release packages: conan-relwithsanitizers
+# builds this project as RelWithDebInfo (with assertions) over the Release packages,
+# so the sanitizer job of a platform shares the dependencies of its release job.
 
 jobs:
   build-and-test:
@@ -36,37 +38,33 @@ jobs:
             deps: linux-gcc
             cc: gcc
             cxx: g++
-            sanitizers: OFF
+            preset: conan-release
           - name: Linux Clang + ASan/UBSan/LSan
             os: ubuntu-latest
             deps: linux-clang
             cc: clang
             cxx: clang++
-            sanitizers: ON
-            release_flags: -O1 -g
+            preset: conan-relwithsanitizers
           - name: macOS Apple Clang
             os: macos-latest
             deps: macos-apple-clang
-            sanitizers: OFF
+            preset: conan-release
           - name: macOS Apple Clang + ASan/UBSan
             os: macos-latest
             deps: macos-apple-clang
-            sanitizers: ON
-            release_flags: -O1 -g
+            preset: conan-relwithsanitizers
           - name: Windows MSVC
             os: windows-latest
             deps: windows-msvc
-            sanitizers: OFF
+            preset: conan-release
           - name: Windows MSVC + ASan
             os: windows-latest
             deps: windows-msvc
-            sanitizers: ON
+            preset: conan-relwithsanitizers
 
     env:
       # Benchmarks in CI only check the bounded-memory assertions; keep them short
       GRPC_ASYNC_STREAM_BENCH_MESSAGES: 10000
-      # CMake 4 rejects dependencies declaring compatibility with CMake < 3.5 (e.g. c-ares)
-      CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
     defaults:
       run:
@@ -79,7 +77,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      # Compilers for the Conan profile and the build (Linux only; others use the default)
+      # Compilers for the build and, through the provider's profile, for Conan (Linux only;
+      # others use the default)
       - name: Select compiler
         if: matrix.cxx
         run: |
@@ -116,12 +115,15 @@ jobs:
           key: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
           restore-keys: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-
 
-      - name: Install dependencies with Conan
+      # Also installs the dependencies with Conan (building the missing ones)
+      - name: Configure
         run: |
-          conan install . --build=missing \
-            -s compiler.cppstd=20 \
-            -s build_type=Release \
-            -c tools.cmake.cmaketoolchain:generator=Ninja
+          cmake --preset ${{ matrix.preset }} | tee configure.log
+          # Every dependency must come from Conan, none from CPM
+          if grep -E "CPM: Adding package|using fetched" configure.log; then
+            echo "::error::A dependency was fetched with CPM instead of using the Conan package"
+            exit 1
+          fi
 
       # Keep only finished packages: build trees and sources would blow the cache quota
       - name: Save Conan packages
@@ -134,34 +136,19 @@ jobs:
           path: ~/.conan2/p
           key: conan-${{ matrix.deps }}-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
 
-      - name: Configure
-        run: |
-          EXTRA_ARGS=()
-          if [ -n "${{ matrix.release_flags }}" ]; then
-            EXTRA_ARGS+=("-DCMAKE_CXX_FLAGS_RELEASE=${{ matrix.release_flags }}")
-          fi
-          cmake --preset conan-release \
-            -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=${{ matrix.sanitizers }} \
-            "${EXTRA_ARGS[@]}" | tee configure.log
-          # Every dependency must come from Conan, none from CPM
-          if grep -E "CPM: Adding package|using fetched" configure.log; then
-            echo "::error::A dependency was fetched with CPM instead of using the Conan package"
-            exit 1
-          fi
-
       - name: Build
-        run: cmake --build build/Release --parallel
+        run: cmake --build --preset ${{ matrix.preset }}
 
       - name: Unit and integration tests
-        run: ctest --test-dir build/Release -LE benchmark --output-on-failure --timeout 300
+        run: ctest --preset ${{ matrix.preset }}
 
       - name: Heavy-load benchmark (memory bounds)
-        run: ctest --test-dir build/Release -L benchmark --output-on-failure
+        run: ctest --preset ${{ matrix.preset }}-benchmarks
 
-  # The CPM fallback (no package manager) stays covered by one job; ccache keeps
-  # its gRPC source build fast after the first run.
+  # The CPM path (no package manager) stays covered by one job; ccache keeps its
+  # gRPC source build fast after the first run.
   cpm-fallback:
-    name: Linux GCC (CPM fallback)
+    name: Linux GCC (CPM)
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
@@ -189,12 +176,11 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch
+          cmake --preset cpm-release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build --preset cpm-release
 
       - name: Unit and integration tests
-        run: ctest --test-dir build -LE benchmark --output-on-failure --timeout 300
+        run: ctest --preset cpm-release
