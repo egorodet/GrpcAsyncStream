@@ -4,7 +4,8 @@ add_executable(GrpcAsyncStreamTests
     WriteStreamTests.cpp
     ReadStreamTests.cpp
     IntegrationTests.cpp
-    TestUtilsUsageTests.cpp)
+    TestUtilsUsageTests.cpp
+    ClientAsyncMocksTests.cpp)
 
 target_link_libraries(GrpcAsyncStreamTests PRIVATE
     GrpcAsyncStreamTestSupport
