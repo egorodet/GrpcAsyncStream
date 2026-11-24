@@ -827,7 +827,9 @@ ctest --test-dir build -LE benchmark --output-on-failure
 ```
 
 Sanitizer build: `cmake --workflow --preset conan-relwithsanitizers` (or `cpm-relwithsanitizers`), or `cmake -S . -B build-asan -DGRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug`
-(the sanitizers and their runtime options are chosen per platform, see the table above; CTest passes the options).
+(the sanitizers and their runtime options are chosen per platform, see the table above). The runtime options are compiled
+into the test and benchmark executables, so they also apply when the tests run from an IDE or the command line;
+`ASAN_OPTIONS` / `UBSAN_OPTIONS` in the environment override them.
 
 ---
 
