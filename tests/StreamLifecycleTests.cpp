@@ -1,13 +1,13 @@
 // Deterministic tests of the AsyncReadWriteStream state machine driven through
-// a fake ClientAsyncReaderWriterInterface (see grpc_test_utils/FakeReaderWriter.h).
+// a fake ClientAsyncReaderWriterInterface (see grpc_async_stream_test/FakeReaderWriter.h).
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -20,11 +20,11 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
-using grpc_utils::SendResult;
-using grpc_utils::StreamState;
+using namespace grpc_async_stream_test;
+using grpc_async_stream::SendResult;
+using grpc_async_stream::StreamState;
 
-using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
 using Call   = FakeCall<Request, Response>;
 
 Response makeResponse(std::uint64_t id)
@@ -445,9 +445,9 @@ TEST_CASE("The destructor releases an active call", "[lifecycle]")
 
 TEST_CASE("Concepts accept valid arguments and reject invalid ones", "[lifecycle][concepts]")
 {
-    using grpc_utils::ProtobufMessage;
-    using grpc_utils::ResponseHandlerFor;
-    using grpc_utils::StreamFactoryFor;
+    using grpc_async_stream::ProtobufMessage;
+    using grpc_async_stream::ResponseHandlerFor;
+    using grpc_async_stream::StreamFactoryFor;
 
     // Message types
     static_assert(ProtobufMessage<Request>);

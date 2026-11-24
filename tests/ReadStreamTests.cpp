@@ -1,19 +1,19 @@
 // Tests of AsyncReadStream, the wrapper over server-streaming calls: the state
 // machine driven through a fake ClientAsyncReaderInterface (see
-// grpc_test_utils/FakeReaderWriter.h), the composition of the three stream
+// grpc_async_stream_test/FakeReaderWriter.h), the composition of the three stream
 // classes, and end-to-end calls of the Subscribe method of the in-process
 // test server (see support/TestServer.h).
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/InProcessServer.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadStream.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
-#include <grpc_utils/AsyncWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/InProcessServer.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadStream.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
+#include <grpc_async_stream/AsyncWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -30,10 +30,10 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
-using grpc_utils::StreamState;
+using namespace grpc_async_stream_test;
+using grpc_async_stream::StreamState;
 
-using ReadStream = grpc_utils::AsyncReadStream<Response>;
+using ReadStream = grpc_async_stream::AsyncReadStream<Response>;
 using Call       = FakeCall<Request, Response>;
 
 Response makeResponse(std::uint64_t id)
@@ -135,15 +135,15 @@ bool waitFor(Predicate&& predicate, std::chrono::milliseconds timeout = std::chr
 
 TEST_CASE("The stream classes are layers of single inheritance over one call core", "[read-stream][concepts]")
 {
-    using grpc_utils::AsyncReaderInterfaceFor;
-    using grpc_utils::AsyncStreamFactoryFor;
-    using grpc_utils::detail::AsyncCallBase;
+    using grpc_async_stream::AsyncReaderInterfaceFor;
+    using grpc_async_stream::AsyncStreamFactoryFor;
+    using grpc_async_stream::detail::AsyncCallBase;
     using BidiInterface   = grpc::ClientAsyncReaderWriterInterface<Request, Response>;
     using BidiCore        = AsyncCallBase<BidiInterface>;
-    using BidiWriteLayer  = grpc_utils::AsyncWriteStream<Request, BidiCore>;
-    using BidiReadLayer   = grpc_utils::AsyncReadStream<Response, BidiWriteLayer>;
-    using ReadWriteStream = grpc_utils::AsyncReadWriteStream<Request, Response>;
-    using WriteStream     = grpc_utils::AsyncWriteStream<Request>;
+    using BidiWriteLayer  = grpc_async_stream::AsyncWriteStream<Request, BidiCore>;
+    using BidiReadLayer   = grpc_async_stream::AsyncReadStream<Response, BidiWriteLayer>;
+    using ReadWriteStream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
+    using WriteStream     = grpc_async_stream::AsyncWriteStream<Request>;
 
     // AsyncReadWriteStream -> AsyncReadStream -> AsyncWriteStream -> AsyncCallBase
     static_assert(std::is_base_of_v<BidiReadLayer, ReadWriteStream>);

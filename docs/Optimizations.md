@@ -61,7 +61,7 @@ budget, three costs stood out, plus one in the benchmark harness itself:
 
 ### 1. Ring buffer for the write queue
 
-`include/grpc_utils/AsyncWriteStream.h`
+`include/grpc_async_stream/AsyncWriteStream.h`
 
 The `std::deque` was replaced by `detail::RingQueue<T>`: a FIFO on a `std::vector` whose capacity is
 a power of two (starting at 16) and doubles when full. Pushing moves the element into a free slot,
@@ -80,7 +80,7 @@ in order.
 
 ### 2. Reuse of the response buffer on reads
 
-`include/grpc_utils/AsyncReadStream.h`
+`include/grpc_async_stream/AsyncReadStream.h`
 
 `AsyncReadStream` now keeps a second message, `m_spare_response`. When a read completes:
 
@@ -104,7 +104,7 @@ to empty messages, which releases that memory. Before, it only called `Clear()`,
 
 ### 3. Monotonic deadline in `pollFor()`
 
-`include/grpc_utils/AsyncCallBase.h`
+`include/grpc_async_stream/AsyncCallBase.h`
 
 `deadlineAfter()` now returns a `gpr_timespec` on `GPR_CLOCK_MONOTONIC` instead of a
 `std::chrono::system_clock::time_point`. This saves gRPC a clock conversion on every `pollFor()`, and
@@ -117,7 +117,7 @@ year or more becomes an unbounded wait instead of overflowing the arithmetic.
 *Superseded by the [second round](#second-round-no-copies-on-the-write-path): the stream no longer keeps
 the request being written at all.*
 
-`include/grpc_utils/AsyncWriteStream.h`
+`include/grpc_async_stream/AsyncWriteStream.h`
 
 After a write completes, the code was commented "free its memory now" but called
 `m_current_write.Clear()`, which keeps the capacity of the request's fields. An idle stream therefore
@@ -217,7 +217,7 @@ The first round left the write path with more copies and moves than gRPC require
 
 ### Changes
 
-All in `include/grpc_utils/AsyncWriteStream.h`.
+All in `include/grpc_async_stream/AsyncWriteStream.h`.
 
 **Write without a member copy.** `m_current_write` is gone. `startWrite()` takes a `const&` and passes
 it straight to `Write()`. A queued request is written straight from its queue slot, and the slot is

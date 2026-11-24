@@ -1,14 +1,14 @@
 // Usage of the reusable test utilities (GrpcAsyncStream::TestUtils) the way a
-// product's own tests would use them: only <grpc_utils/...> and
-// <grpc_test_utils/...> are included, nothing from this repository's tests.
+// product's own tests would use them: only <grpc_async_stream/...> and
+// <grpc_async_stream_test/...> are included, nothing from this repository's tests.
 // The "product" message is a minimal stand-in for a generated protobuf type.
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/InProcessServer.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/InProcessServer.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -36,10 +36,10 @@ struct ProductMessage
     void                        Clear() { value = 0; }
 };
 
-using ProductStream = grpc_utils::AsyncReadWriteStream<ProductMessage, ProductMessage>;
-using ProductCall   = grpc_test_utils::FakeCall<ProductMessage, ProductMessage>;
+using ProductStream = grpc_async_stream::AsyncReadWriteStream<ProductMessage, ProductMessage>;
+using ProductCall   = grpc_async_stream_test::FakeCall<ProductMessage, ProductMessage>;
 
-static_assert(grpc_utils::ProtobufMessage<ProductMessage>);
+static_assert(grpc_async_stream::ProtobufMessage<ProductMessage>);
 
 // Generic (method-agnostic) callback service echoing every message back
 class EchoGenericService final : public grpc::CallbackGenericService
@@ -98,47 +98,49 @@ std::string toString(const grpc::ByteBuffer& buffer)
 TEST_CASE("Test utilities drive a product stream through a fake call", "[test-utils]")
 {
     auto          call = std::make_shared<ProductCall>();
-    ProductStream stream(grpc_utils::WriteQueueLimits{.max_messages = 2,
-                                                      .overflow_policy = grpc_utils::WriteOverflowPolicy::DropNewest});
+    ProductStream stream(grpc_async_stream::WriteQueueLimits{
+        .max_messages    = 2,
+        .overflow_policy = grpc_async_stream::WriteOverflowPolicy::DropNewest,
+    });
     std::vector<ProductMessage> received;
     auto handler = [&](ProductMessage&& message) { received.push_back(message); };
 
-    REQUIRE(stream.open(grpc_test_utils::makeFakeStreamFactory(call)));
-    CHECK(stream.state() == grpc_utils::StreamState::Open);
+    REQUIRE(stream.open(grpc_async_stream_test::makeFakeStreamFactory(call)));
+    CHECK(stream.state() == grpc_async_stream::StreamState::Open);
 
     // Until the start-call completes, requests are queued; the third one overflows
-    CHECK(stream.sendRequest({.value = 1}) == grpc_utils::SendResult::Queued);
-    CHECK(stream.sendRequest({.value = 2}) == grpc_utils::SendResult::Queued);
-    CHECK(stream.sendRequest({.value = 3}) == grpc_utils::SendResult::Dropped);
-    CHECK(grpc_test_utils::enumName(grpc_utils::SendResult::Dropped) == "Dropped");
+    CHECK(stream.sendRequest({.value = 1}) == grpc_async_stream::SendResult::Queued);
+    CHECK(stream.sendRequest({.value = 2}) == grpc_async_stream::SendResult::Queued);
+    CHECK(stream.sendRequest({.value = 3}) == grpc_async_stream::SendResult::Dropped);
+    CHECK(grpc_async_stream_test::enumName(grpc_async_stream::SendResult::Dropped) == "Dropped");
 
     call->completeStart();
     for (std::size_t written = 1; written <= 2; ++written)
     {
-        REQUIRE(grpc_test_utils::pollUntil(stream, handler, [&] { return call->writePending(); }));
+        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler, [&] { return call->writePending(); }));
         call->completeWrite();
-        REQUIRE(grpc_test_utils::pollUntil(stream, handler,
-                                           [&] { return stream.writeQueueStats().written_messages == written; }));
+        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler,
+                                                  [&] { return stream.writeQueueStats().written_messages == written; }));
     }
-    CHECK(grpc_test_utils::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
+    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
 
     // Server messages arrive one read at a time
     for (const std::uint64_t value : {10U, 11U})
     {
         call->deliver({.value = value});
-        REQUIRE(grpc_test_utils::pollUntil(stream, handler,
-                                           [&] { return !received.empty() && received.back().value == value; }));
+        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler,
+                                                  [&] { return !received.empty() && received.back().value == value; }));
     }
-    CHECK(grpc_test_utils::idsOf(received) == std::vector<std::uint64_t>{10, 11});
-    CHECK(grpc_test_utils::idsStrictlyIncrease(received));
+    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{10, 11});
+    CHECK(grpc_async_stream_test::idsStrictlyIncrease(received));
 
     call->endReads();
-    REQUIRE(grpc_test_utils::pollUntil(stream, handler, [&] { return call->finishPending(); }));
+    REQUIRE(grpc_async_stream_test::pollUntil(stream, handler, [&] { return call->finishPending(); }));
     call->completeFinish(grpc::Status(grpc::StatusCode::ABORTED, "done"));
-    REQUIRE(grpc_test_utils::pollUntilClosed(stream, handler));
+    REQUIRE(grpc_async_stream_test::pollUntilClosed(stream, handler));
     CHECK(stream.status().error_code() == grpc::StatusCode::ABORTED);
     CHECK(call->violations().empty()); // the stream used the gRPC async API correctly
-    CHECK(grpc_test_utils::statusCodeName(grpc::StatusCode::ABORTED) == "ABORTED (10)");
+    CHECK(grpc_async_stream_test::statusCodeName(grpc::StatusCode::ABORTED) == "ABORTED (10)");
 }
 
 TEST_CASE("InProcessServer serves calls without network ports", "[test-utils]")
@@ -146,8 +148,8 @@ TEST_CASE("InProcessServer serves calls without network ports", "[test-utils]")
     // A product passes its generated service: InProcessServer server(service).
     // Here a generic echo service (no generated code) is registered through the
     // configure hook and called through a generic stub.
-    EchoGenericService               echo_service;
-    grpc_test_utils::InProcessServer server({}, [&](grpc::ServerBuilder& builder) {
+    EchoGenericService                      echo_service;
+    grpc_async_stream_test::InProcessServer server({}, [&](grpc::ServerBuilder& builder) {
         builder.RegisterCallbackGenericService(&echo_service);
     });
 

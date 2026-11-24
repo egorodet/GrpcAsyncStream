@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-namespace grpc_test_utils
+namespace grpc_async_stream_test
 {
 
 template<typename W, typename R>
@@ -321,4 +321,4 @@ auto makeFakeReaderFactory(std::shared_ptr<FakeCall<W, R>> call, W request)
     };
 }
 
-} // namespace grpc_test_utils
+} // namespace grpc_async_stream_test

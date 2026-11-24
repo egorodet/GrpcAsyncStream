@@ -5,7 +5,7 @@
 // Works with any synchronous, callback or async gRPC service implementation.
 //
 //   MyServiceImpl service;
-//   grpc_test_utils::InProcessServer server(service);   // or server({&service_a, &service_b})
+//   grpc_async_stream_test::InProcessServer server(service);   // or server({&service_a, &service_b})
 //   auto stub = server.makeStub<my::proto::MyService>();
 //
 // Test-framework independent; requires only gRPC.
@@ -19,7 +19,7 @@
 #include <stdexcept>
 #include <string_view>
 
-namespace grpc_test_utils
+namespace grpc_async_stream_test
 {
 
 class InProcessServer
@@ -106,4 +106,4 @@ inline constexpr std::string_view unreachable_server_address = "ipv4:127.0.0.1:1
 inline constexpr std::string_view unreachable_server_address = "unix:/nonexistent/grpc-async-stream.sock";
 #endif
 
-} // namespace grpc_test_utils
+} // namespace grpc_async_stream_test

@@ -18,13 +18,13 @@
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadStream.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
-#include <grpc_utils/AsyncWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadStream.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
+#include <grpc_async_stream/AsyncWriteStream.h>
 
 #include <catch2/benchmark/catch_benchmark.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -45,12 +45,12 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
-using grpc_utils::SendResult;
-using grpc_utils::WriteOverflowPolicy;
-using grpc_utils::WriteQueueLimits;
+using namespace grpc_async_stream_test;
+using grpc_async_stream::SendResult;
+using grpc_async_stream::WriteOverflowPolicy;
+using grpc_async_stream::WriteQueueLimits;
 
-using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
 using Clock  = std::chrono::steady_clock;
 
 std::uint64_t envOr(const char* name, std::uint64_t fallback)
@@ -149,7 +149,7 @@ LoadResult runHeavyLoad(const LoadConfig& config)
     };
 
     // The warm-up request sent by ServerStream is excluded from the results
-    const grpc_utils::WriteQueueStats warm_up = s.stream.writeQueueStats();
+    const grpc_async_stream::WriteQueueStats warm_up = s.stream.writeQueueStats();
 
     MemoryTracker::releaseFreeMemory();
     const std::optional<MemoryTracker::HeapCounters> heap_baseline = MemoryTracker::heap();
@@ -332,9 +332,9 @@ TEST_CASE("Server-streaming receive throughput", "[!benchmark][benchmark][read]"
     for (const std::size_t payload_size : {std::size_t{64}, std::size_t{1024}, std::size_t{16 * 1024}})
     {
         const Request burst = makeBurst(0, batch, std::string(payload_size, 'r'));
-        grpc_utils::AsyncReadStream<Response> stream;
-        std::uint64_t                         received = 0;
-        auto                                  handler  = [&](Response&&) { ++received; };
+        grpc_async_stream::AsyncReadStream<Response> stream;
+        std::uint64_t                                received = 0;
+        auto                                         handler  = [&](Response&&) { ++received; };
 
         BENCHMARK(std::to_string(batch) + " responses x " + std::to_string(payload_size) + " B")
         {
@@ -362,9 +362,9 @@ TEST_CASE("Client-streaming send throughput", "[!benchmark][benchmark][write]")
 
     for (const std::size_t payload_size : {std::size_t{64}, std::size_t{1024}, std::size_t{16 * 1024}})
     {
-        const std::string                        payload(payload_size, 'w');
-        grpc_utils::AsyncWriteStream<Request>    stream(WriteQueueLimits::unbounded());
-        proto::UploadSummary                     summary;
+        const std::string                            payload(payload_size, 'w');
+        grpc_async_stream::AsyncWriteStream<Request> stream(WriteQueueLimits::unbounded());
+        proto::UploadSummary                         summary;
 
         BENCHMARK(std::to_string(batch) + " requests x " + std::to_string(payload_size) + " B")
         {
@@ -432,8 +432,8 @@ TEST_CASE("Cost of poll() when no event is available", "[!benchmark][benchmark][
 
     {
         // No operation outstanding: no event can arrive
-        proto::UploadSummary                  summary;
-        grpc_utils::AsyncWriteStream<Request> stream;
+        proto::UploadSummary                         summary;
+        grpc_async_stream::AsyncWriteStream<Request> stream;
         REQUIRE(stream.open([&](grpc::ClientContext* context, grpc::CompletionQueue* cq, void* tag) {
             return stub->AsyncUpload(context, &summary, cq, tag);
         }));

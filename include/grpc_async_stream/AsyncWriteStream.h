@@ -3,7 +3,7 @@
 // Requires C++20 (concepts, designated initializers, defaulted comparisons).
 // Depends only on gRPC and the C++ standard library.
 
-#include <grpc_utils/AsyncCallBase.h>
+#include <grpc_async_stream/AsyncCallBase.h>
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
@@ -18,7 +18,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace grpc_utils
+namespace grpc_async_stream
 {
 
 // What happens to a request that does not fit into the bounded write queue.
@@ -659,4 +659,4 @@ private:
     std::size_t                     m_queue_peak_since_shrink = 0;
 };
 
-} // namespace grpc_utils
+} // namespace grpc_async_stream

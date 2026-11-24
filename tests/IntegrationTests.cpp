@@ -3,10 +3,10 @@
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -23,13 +23,13 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
+using namespace grpc_async_stream_test;
 using namespace Catch::Generators;
-using grpc_utils::SendResult;
-using grpc_utils::WriteOverflowPolicy;
-using grpc_utils::WriteQueueLimits;
+using grpc_async_stream::SendResult;
+using grpc_async_stream::WriteOverflowPolicy;
+using grpc_async_stream::WriteQueueLimits;
 
-using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
 
 struct ServerFixture
 {
@@ -86,7 +86,7 @@ TEST_CASE("Echo round-trip preserves order and payloads", "[integration]")
     {
         // Requests sent right after open() are queued until the start-call completes
         const SendResult result = f.stream.sendRequest(makeEcho(id, "payload-" + std::to_string(id)));
-        REQUIRE(grpc_utils::isAccepted(result));
+        REQUIRE(grpc_async_stream::isAccepted(result));
     }
 
     REQUIRE(f.pump([&] { return f.responses.size() == count; }));
@@ -120,12 +120,12 @@ TEST_CASE("Ping-pong: the handler sends the next request for each response", "[i
         CHECK(response.id() == received);
         ++received;
         if (received < rounds)
-            CHECK(grpc_utils::isAccepted(f.stream.sendRequest(makeEcho(received))));
+            CHECK(grpc_async_stream::isAccepted(f.stream.sendRequest(makeEcho(received))));
         else
             CHECK(f.stream.writesDone());
     };
 
-    REQUIRE(grpc_utils::isAccepted(f.stream.sendRequest(makeEcho(0))));
+    REQUIRE(grpc_async_stream::isAccepted(f.stream.sendRequest(makeEcho(0))));
     REQUIRE(pollUntilClosed(f.stream, ping, std::chrono::seconds(20)));
     CHECK(received == rounds);
     CHECK(f.stream.status().ok());

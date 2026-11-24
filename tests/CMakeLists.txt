@@ -32,8 +32,8 @@ endif()
 # Every public header must compile on its own (self-contained includes): one
 # translation unit per header, built with the project's warning flags.
 set(_header_check_sources)
-foreach(header IN ITEMS include/grpc_utils/AsyncCallBase.h include/grpc_utils/AsyncWriteStream.h
-                        include/grpc_utils/AsyncReadStream.h include/grpc_utils/AsyncReadWriteStream.h
+foreach(header IN ITEMS include/grpc_async_stream/AsyncCallBase.h include/grpc_async_stream/AsyncWriteStream.h
+                        include/grpc_async_stream/AsyncReadStream.h include/grpc_async_stream/AsyncReadWriteStream.h
                         ${GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS})
     string(MAKE_C_IDENTIFIER "${header}" header_id)
     file(RELATIVE_PATH include_path "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/${header}")
@@ -45,5 +45,5 @@ endforeach()
 add_library(GrpcAsyncStreamHeaderChecks OBJECT ${_header_check_sources})
 target_link_libraries(GrpcAsyncStreamHeaderChecks PRIVATE
     GrpcAsyncStream::TestUtils
-    Catch2::Catch2) # for grpc_test_utils/Catch2StringMakers.h
+    Catch2::Catch2) # for grpc_async_stream_test/Catch2StringMakers.h
 grpc_async_stream_configure_test_target(GrpcAsyncStreamHeaderChecks)
