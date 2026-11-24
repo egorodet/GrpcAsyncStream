@@ -197,7 +197,7 @@ TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]
     cq.Shutdown();
 }
 
-TEST_CASE("Mocks expose the written requests", "[mocks]")
+TEST_CASE("Mocks expose the written requests and pop them one by one", "[mocks]")
 {
     grpc::CompletionQueue cq;
     int                   tag = 0;
@@ -213,6 +213,14 @@ TEST_CASE("Mocks expose the written requests", "[mocks]")
         mock.Write(makeRequest(2), grpc::WriteOptions(), &tag);
         CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
         CHECK(&mock.writtenRequests() == &mock.call().writes());
+
+        Request request;
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 1);
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 2);
+        CHECK_FALSE(mock.popWrittenRequest(request));
+        CHECK(mock.writtenRequests().size() == 2);
     }
     SECTION("client-streaming mock")
     {
@@ -225,6 +233,14 @@ TEST_CASE("Mocks expose the written requests", "[mocks]")
         mock.Write(makeRequest(4), grpc::WriteOptions(), &tag);
         CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
         CHECK(&mock.writtenRequests() == &mock.call().writes());
+
+        Request request;
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 3);
+        REQUIRE(mock.popWrittenRequest(request));
+        CHECK(request.id() == 4);
+        CHECK_FALSE(mock.popWrittenRequest(request));
+        CHECK(mock.writtenRequests().size() == 2);
     }
     // Drain the completions posted by the mock before the queue is destroyed
     cq.Shutdown();
