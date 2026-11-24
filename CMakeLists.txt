@@ -98,6 +98,7 @@ target_sources(GrpcAsyncStream INTERFACE
 #
 #   StreamTestUtils.h     polling helpers and message-sequence checks   (gRPC)
 #   FakeReaderWriter.h    deterministic fake of the async bidi stream   (gRPC)
+#   ClientAsyncMocks.h    extensible mocks of the async client streams  (gRPC)
 #   InProcessServer.h     gRPC server reachable through in-process channels (gRPC)
 #   EnumReflection.h      names / indexes of the library enums          (magic_enum)
 #   Catch2StringMakers.h  readable Catch2 output for the enums and grpc::StatusCode
@@ -106,6 +107,7 @@ target_sources(GrpcAsyncStream INTERFACE
 
 set(GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS
     include/grpc_async_stream_test/Catch2StringMakers.h
+    include/grpc_async_stream_test/ClientAsyncMocks.h
     include/grpc_async_stream_test/EnumReflection.h
     include/grpc_async_stream_test/FakeReaderWriter.h
     include/grpc_async_stream_test/InProcessServer.h

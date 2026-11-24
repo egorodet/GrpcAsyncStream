@@ -793,7 +793,7 @@ with `conan-release`, and Linux Clang (ASan/UBSan/LSan), macOS Apple Clang (ASan
 
 ## Tests
 
-`GrpcAsyncStreamTests` (Catch2, registered with CTest through `catch_discover_tests`) has six suites,
+`GrpcAsyncStreamTests` (Catch2, registered with CTest through `catch_discover_tests`) has seven suites,
 built on the [test utilities](#test-utilities-for-your-own-tests):
 
 | Suite | File | Approach |
@@ -803,6 +803,7 @@ built on the [test utilities](#test-utilities-for-your-own-tests):
 | `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to the repository's test service (`tests/support/TestServer.*`) in an **in-process server** (`grpc_async_stream_test/InProcessServer.h`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
 | `[write-stream]` | `tests/WriteStreamTests.cpp` | `AsyncWriteStream` for client-streaming calls: the state machine through a fake `ClientAsyncWriterInterface` (no reads, Finish right after the half-close or after a failed write or start-call, close, reopen, bounded queue, no API contract violations), `poll()` of an idle stream returning without waiting for the completion queue, compile-time checks of the class relations and concepts, and `Upload` calls to the in-process test server (all requests in order with the response, empty upload, server errors, early server reply, cancellation, deadline, unreachable server, sequential calls, slow server with a bounded queue). |
 | `[read-stream]` | `tests/ReadStreamTests.cpp` | `AsyncReadStream` for server-streaming calls and the composition of the stream classes: compile-time checks of the layering (single inheritance, one core, no polymorphism) and the concepts; the state machine through a fake `ClientAsyncReaderInterface` (request passed to the stub, reading before the start-call completes, end of stream, Finish waiting for the start-call, failed start-call, close, re-entrant close, reopen, no writes); and `Subscribe` calls to the in-process test server (5000-response burst in order, single and empty responses, server errors, cancellation observed by the server, deadline, unreachable server, sequential calls). |
+| `[mocks]` | `tests/ClientAsyncMocksTests.cpp` | The extensible mocks of `grpc_async_stream_test/ClientAsyncMocks.h`: compile-time checks (interfaces implemented, not final, constructed from the completion queue only, factory concepts), recording of operations, and derived mocks driving all three stream classes (echoing writes and pushed responses through `enqueueResponse()`, a failing start-call, scripted server-streaming responses, the mock destroyed by `close()`). |
 | `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used the way a product's tests would use them, with nothing but `<grpc_async_stream/…>` and `<grpc_async_stream_test/…>`: a product message type of its own driven through the fake call, and a generic echo service (no generated code) called through an `InProcessServer`. |
 
 In addition, `GrpcAsyncStreamHeaderChecks` compiles every public header on its own, with the full
@@ -922,6 +923,7 @@ library, as the header-only CMake target **`GrpcAsyncStream::TestUtils`** with h
 | Header | Contents | Needs |
 |---|---|---|
 | `FakeReaderWriter.h` | `FakeCall<W, R>` with `makeFakeStreamFactory()` (a fake `ClientAsyncReaderWriterInterface`) `makeFakeWriterFactory(call, &response)` (a fake `ClientAsyncWriterInterface` for client-streaming calls; `completeFinish(status, response)` fills the response) and `makeFakeReaderFactory(call, request)` (a fake `ClientAsyncReaderInterface` for server-streaming calls; `initialRequest()` returns the request): start-call, reads, writes, half-close and finish complete only when the test says so, with any outcome. Records the written messages and every misuse of the gRPC async API (`violations()`). | gRPC |
+| `ClientAsyncMocks.h` | Extensible mocks `ClientAsyncReaderWriterMock<W, R>`, `ClientAsyncWriterMock<W>` and `ClientAsyncReaderMock<R>` of the three gRPC client stream interfaces. Each mock is constructed from the call's completion queue only and creates the `FakeCall` it records its operations with (`call()`, `sharedCall()`). Unlike the final fakes, every operation is virtual: a derived mock overrides what it needs (complete or fail the start-call, complete writes, end the reads) and calls the base implementation to keep the recording and contract checks. The reading mocks queue responses with the protected `enqueueResponse()`, delivered one per `Read`, for the response pushing methods of derived mocks. `makeMockStreamFactory<Mock>(on_created)` creates the stream factory for `open()`: it constructs the mock, calls `StartCall(tag)` like an `Async*` stub method, and passes the mock to `on_created`. | gRPC |
 | `InProcessServer.h` | `InProcessServer`: runs any gRPC services (sync, async, callback, generic) in the test process, reachable through in-process channels: no ports, no conflicts between parallel test runs. `makeStub<Service>()`, extra channels with their own arguments, configure hook, idempotent `shutdown()`. Also `unreachable_server_address` for connection-failure tests. | gRPC |
 | `StreamTestUtils.h` | `pollUntil()` / `pollUntilClosed()` with timeouts, with a response handler (`AsyncReadWriteStream`, `AsyncReadStream`) or without (`AsyncWriteStream`); `idsOf()` / `idsStrictlyIncrease()` for message sequences. | gRPC |
 | `EnumReflection.h` | `enumName()`, `enumIndex()` for `SendResult`, `WriteOverflowPolicy` and `StreamState`; `statusCodeName()` for `grpc::StatusCode`. | magic_enum |
@@ -1024,6 +1026,7 @@ GrpcAsyncStream/
 │   │   └── AsyncReadWriteStream.h    #   bidirectional streams: read side over write side
 │   └── grpc_async_stream_test/       # reusable test utilities: GrpcAsyncStream::TestUtils
 │       ├── FakeReaderWriter.h        #   deterministic fakes of the async bidi, writer and reader streams
+│       ├── ClientAsyncMocks.h        #   extensible (derivable) mocks of the same three stream interfaces
 │       ├── InProcessServer.h         #   gRPC server reachable through in-process channels
 │       ├── StreamTestUtils.h         #   polling helpers, message-sequence checks
 │       ├── EnumReflection.h          #   enum names / indexes (magic_enum)
@@ -1036,6 +1039,7 @@ GrpcAsyncStream/
 │   ├── WriteStreamTests.cpp          # AsyncWriteStream (client-streaming calls)
 │   ├── ReadStreamTests.cpp           # AsyncReadStream (server-streaming calls), class composition
 │   ├── IntegrationTests.cpp
+│   ├── ClientAsyncMocksTests.cpp     # the extensible client stream mocks, used directly and derived
 │   └── TestUtilsUsageTests.cpp       # the test utilities used as a product would use them
 └── benchmarks/
     ├── AsyncStreamBenchmarks.cpp
