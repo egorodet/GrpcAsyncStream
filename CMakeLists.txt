@@ -89,6 +89,7 @@ target_compile_features(GrpcAsyncStream INTERFACE cxx_std_20)
 target_sources(GrpcAsyncStream INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncCallBase.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncWriteStream.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/RingQueue.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadStream.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadWriteStream.h>)
 
