@@ -1,17 +1,17 @@
 // Tests of AsyncWriteStream, the wrapper over client-streaming calls: the state
 // machine driven through a fake ClientAsyncWriterInterface (see
-// grpc_test_utils/FakeReaderWriter.h), and end-to-end calls of the Upload
+// grpc_async_stream_test/FakeReaderWriter.h), and end-to-end calls of the Upload
 // method of the in-process test server (see support/TestServer.h).
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/InProcessServer.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
-#include <grpc_utils/AsyncWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/InProcessServer.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
+#include <grpc_async_stream/AsyncWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -29,14 +29,14 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
+using namespace grpc_async_stream_test;
 using namespace Catch::Generators;
-using grpc_utils::SendResult;
-using grpc_utils::StreamState;
-using grpc_utils::WriteOverflowPolicy;
-using grpc_utils::WriteQueueLimits;
+using grpc_async_stream::SendResult;
+using grpc_async_stream::StreamState;
+using grpc_async_stream::WriteOverflowPolicy;
+using grpc_async_stream::WriteQueueLimits;
 
-using WriteStream = grpc_utils::AsyncWriteStream<Request>;
+using WriteStream = grpc_async_stream::AsyncWriteStream<Request>;
 using Call        = FakeCall<Request, UploadSummary>;
 
 UploadSummary makeSummary(std::uint64_t received_count)
@@ -135,15 +135,15 @@ bool waitFor(Predicate&& predicate, std::chrono::milliseconds timeout = std::chr
 
 TEST_CASE("AsyncReadWriteStream is an AsyncWriteStream over the bidirectional interface", "[write-stream][concepts]")
 {
-    using grpc_utils::AsyncStreamFactoryFor;
-    using grpc_utils::AsyncWriterInterfaceFor;
-    using ReadWriteStream = grpc_utils::AsyncReadWriteStream<Request, Response>;
+    using grpc_async_stream::AsyncStreamFactoryFor;
+    using grpc_async_stream::AsyncWriterInterfaceFor;
+    using ReadWriteStream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
     using BidiInterface   = grpc::ClientAsyncReaderWriterInterface<Request, Response>;
-    using BidiCore        = grpc_utils::detail::AsyncCallBase<BidiInterface>;
+    using BidiCore        = grpc_async_stream::detail::AsyncCallBase<BidiInterface>;
 
-    static_assert(std::is_base_of_v<grpc_utils::AsyncWriteStream<Request, BidiCore>, ReadWriteStream>);
+    static_assert(std::is_base_of_v<grpc_async_stream::AsyncWriteStream<Request, BidiCore>, ReadWriteStream>);
     static_assert(std::is_same_v<WriteStream::AsyncStreamInterface, grpc::ClientAsyncWriterInterface<Request>>);
-    static_assert(std::is_base_of_v<grpc_utils::detail::AsyncCallBase<grpc::ClientAsyncWriterInterface<Request>>,
+    static_assert(std::is_base_of_v<grpc_async_stream::detail::AsyncCallBase<grpc::ClientAsyncWriterInterface<Request>>,
                                     WriteStream>);
 
     // Both gRPC client stream interfaces with a write side qualify, read-only ones do not
@@ -451,7 +451,7 @@ TEST_CASE("Upload delivers all requests in order and receives the response", "[w
     constexpr std::uint64_t count = 1000;
     for (std::uint64_t id = 0; id < count; ++id)
     {
-        REQUIRE(grpc_utils::isAccepted(f.stream.sendRequest(makeEcho(id, "payload"))));
+        REQUIRE(grpc_async_stream::isAccepted(f.stream.sendRequest(makeEcho(id, "payload"))));
         if (id % 16 == 0)
             f.stream.poll();
     }

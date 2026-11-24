@@ -27,7 +27,7 @@ option(GRPC_ASYNC_STREAM_INSTALL          "Generate install and package-config r
 # when it is the top-level project, and they use insecure (in-process) channels only
 option(GRPC_ASYNC_STREAM_GRPC_UNSECURE    "When gRPC is built from source, use grpc++_unsecure (no TLS, xDS, RE2) and skip BoringSSL/OpenSSL"
        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
-option(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS "Provide the GrpcAsyncStream::TestUtils target (grpc_test_utils headers) for tests of other projects"
+option(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS "Provide the GrpcAsyncStream::TestUtils target (grpc_async_stream_test headers) for tests of other projects"
        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 
 # This project's own tests and benchmarks are built on the test utilities
@@ -73,7 +73,7 @@ endif()
 include(Dependencies)
 
 # ---------------------------------------------------------------------------
-# Header-only library: <grpc_utils/...>, depends on gRPC only
+# Header-only library: <grpc_async_stream/...>, depends on gRPC only
 # ---------------------------------------------------------------------------
 
 add_library(GrpcAsyncStream INTERFACE)
@@ -87,13 +87,13 @@ target_compile_features(GrpcAsyncStream INTERFACE cxx_std_20)
 
 # Shows the headers in IDE project trees
 target_sources(GrpcAsyncStream INTERFACE
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_utils/AsyncCallBase.h>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_utils/AsyncWriteStream.h>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_utils/AsyncReadStream.h>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_utils/AsyncReadWriteStream.h>)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncCallBase.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncWriteStream.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadStream.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadWriteStream.h>)
 
 # ---------------------------------------------------------------------------
-# Header-only test utilities: <grpc_test_utils/...>, for tests of code built on
+# Header-only test utilities: <grpc_async_stream_test/...>, for tests of code built on
 # the library (this project's and other projects' tests alike)
 #
 #   StreamTestUtils.h     polling helpers and message-sequence checks   (gRPC)
@@ -105,11 +105,11 @@ target_sources(GrpcAsyncStream INTERFACE
 # ---------------------------------------------------------------------------
 
 set(GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS
-    include/grpc_test_utils/Catch2StringMakers.h
-    include/grpc_test_utils/EnumReflection.h
-    include/grpc_test_utils/FakeReaderWriter.h
-    include/grpc_test_utils/InProcessServer.h
-    include/grpc_test_utils/StreamTestUtils.h)
+    include/grpc_async_stream_test/Catch2StringMakers.h
+    include/grpc_async_stream_test/EnumReflection.h
+    include/grpc_async_stream_test/FakeReaderWriter.h
+    include/grpc_async_stream_test/InProcessServer.h
+    include/grpc_async_stream_test/StreamTestUtils.h)
 
 if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
     grpc_async_stream_add_magic_enum()
@@ -178,10 +178,10 @@ if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
     include(CMakePackageConfigHelpers)
 
     install(TARGETS GrpcAsyncStream EXPORT GrpcAsyncStreamTargets)
-    install(DIRECTORY include/grpc_utils DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+    install(DIRECTORY include/grpc_async_stream DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
         install(TARGETS GrpcAsyncStreamTestUtils EXPORT GrpcAsyncStreamTargets)
-        install(DIRECTORY include/grpc_test_utils DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        install(DIRECTORY include/grpc_async_stream_test DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     endif()
     install(EXPORT GrpcAsyncStreamTargets
         NAMESPACE GrpcAsyncStream::

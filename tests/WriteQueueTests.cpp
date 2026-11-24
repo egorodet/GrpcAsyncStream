@@ -3,11 +3,11 @@
 
 #include "support/TestServer.h"
 
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/EnumReflection.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/StreamTestUtils.h>
-#include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/EnumReflection.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -24,14 +24,14 @@ namespace
 {
 
 using namespace TestSupport;
-using namespace grpc_test_utils;
+using namespace grpc_async_stream_test;
 using namespace Catch::Generators;
-using grpc_utils::SendResult;
-using grpc_utils::WriteOverflowPolicy;
-using grpc_utils::WriteQueueLimits;
-using grpc_utils::WriteQueueStats;
+using grpc_async_stream::SendResult;
+using grpc_async_stream::WriteOverflowPolicy;
+using grpc_async_stream::WriteQueueLimits;
+using grpc_async_stream::WriteQueueStats;
 
-using Stream = grpc_utils::AsyncReadWriteStream<Request, Response>;
+using Stream = grpc_async_stream::AsyncReadWriteStream<Request, Response>;
 using Call   = FakeCall<Request, Response>;
 
 constexpr std::size_t unlimited = WriteQueueLimits::unlimited;
@@ -164,12 +164,12 @@ TEST_CASE("Default write queue limits bound both message count and bytes", "[wri
 
 TEST_CASE("isAccepted() classifies every send result", "[write-queue][enums]")
 {
-    static_assert(grpc_utils::isAccepted(SendResult::Written));
+    static_assert(grpc_async_stream::isAccepted(SendResult::Written));
 
     const SendResult result = GENERATE(from_range(magic_enum::enum_values<SendResult>()));
     const bool accepted     = result == SendResult::Written || result == SendResult::Queued ||
                           result == SendResult::QueuedDroppedOldest;
-    CHECK(grpc_utils::isAccepted(result) == accepted);
+    CHECK(grpc_async_stream::isAccepted(result) == accepted);
 }
 
 TEST_CASE("Library enums reflect with magic_enum: names, parsing, counts and indexes", "[write-queue][enums]")
@@ -181,8 +181,8 @@ TEST_CASE("Library enums reflect with magic_enum: names, parsing, counts and ind
     static_assert(magic_enum::enum_name(WriteOverflowPolicy::DropNewest) == "DropNewest");
     static_assert(magic_enum::enum_cast<WriteOverflowPolicy>("DropOldest") == WriteOverflowPolicy::DropOldest);
     static_assert(enumIndex(SendResult::NotWritable) == magic_enum::enum_count<SendResult>() - 1);
-    static_assert(magic_enum::enum_count<grpc_utils::StreamState>() == 5);
-    static_assert(magic_enum::enum_name(grpc_utils::StreamState::HalfClosing) == "HalfClosing");
+    static_assert(magic_enum::enum_count<grpc_async_stream::StreamState>() == 5);
+    static_assert(magic_enum::enum_name(grpc_async_stream::StreamState::HalfClosing) == "HalfClosing");
 
     SECTION("Every enumerator round-trips through its name and index")
     {
@@ -447,7 +447,7 @@ TEST_CASE("Requests sent while the queue drains are accepted again", "[write-que
 
 TEST_CASE("The ring buffer of the write queue keeps FIFO order across wrap-around and growth", "[write-queue]")
 {
-    grpc_utils::detail::RingQueue<std::string> queue;
+    grpc_async_stream::detail::RingQueue<std::string> queue;
     std::uint64_t                              next_in  = 0;
     std::uint64_t                              next_out = 0;
 
@@ -508,7 +508,7 @@ TEST_CASE("The ring buffer destroys elements as soon as they leave the queue", "
 {
     CountedElement::live = 0;
     {
-        grpc_utils::detail::RingQueue<CountedElement> queue;
+        grpc_async_stream::detail::RingQueue<CountedElement> queue;
         for (int i = 0; i < 12; ++i)
             queue.emplaceBack(i);
         for (int i = 0; i < 9; ++i)
@@ -545,7 +545,7 @@ TEST_CASE("The ring buffer keeps its elements when copying them while growing th
 {
     ThrowingCopyElement::live = 0;
     {
-        grpc_utils::detail::RingQueue<ThrowingCopyElement> queue;
+        grpc_async_stream::detail::RingQueue<ThrowingCopyElement> queue;
         for (int i = 0; i < 16; ++i)
             queue.emplaceBack(i);
 

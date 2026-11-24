@@ -1,12 +1,12 @@
 #pragma once
 
 // The TestStream service of this repository's own tests and benchmarks
-// (tests/proto/test_stream.proto), served by a grpc_test_utils::InProcessServer.
-// Specific to this repository; the reusable parts live in include/grpc_test_utils.
+// (tests/proto/test_stream.proto), served by a grpc_async_stream_test::InProcessServer.
+// Specific to this repository; the reusable parts live in include/grpc_async_stream_test.
 
 #include "test_stream.grpc.pb.h"
 
-#include <grpc_test_utils/InProcessServer.h>
+#include <grpc_async_stream_test/InProcessServer.h>
 
 #include <grpcpp/grpcpp.h>
 
@@ -78,8 +78,8 @@ public:
     }
 
 private:
-    TestStreamService                m_service; // must outlive the server
-    grpc_test_utils::InProcessServer m_server{m_service};
+    TestStreamService                       m_service; // must outlive the server
+    grpc_async_stream_test::InProcessServer m_server{m_service};
 };
 
 // Helpers creating requests

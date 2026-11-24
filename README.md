@@ -12,9 +12,9 @@ queue**: once its message or byte limit is reached, excess requests are discarde
 configurable overflow policy, so memory use stays bounded however heavy the load is.
 
 ```cpp
-#include <grpc_utils/AsyncReadWriteStream.h>
+#include <grpc_async_stream/AsyncReadWriteStream.h>
 
-grpc_utils::AsyncReadWriteStream<ChatRequest, ChatResponse> stream;
+grpc_async_stream::AsyncReadWriteStream<ChatRequest, ChatResponse> stream;
 
 stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     ctx->AddMetadata("authorization", token);
@@ -39,10 +39,10 @@ side without the read side, and for server-streaming calls (one request, many re
 `AsyncReadStream` offers the read side without the write side:
 
 ```cpp
-#include <grpc_utils/AsyncWriteStream.h>
+#include <grpc_async_stream/AsyncWriteStream.h>
 
 UploadSummary summary; // receives the response; must outlive the call
-grpc_utils::AsyncWriteStream<UploadChunk> upload;
+grpc_async_stream::AsyncWriteStream<UploadChunk> upload;
 
 upload.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     return stub->AsyncUpload(ctx, &summary, cq, tag);
@@ -58,9 +58,9 @@ if (upload.status().ok()) {
 ```
 
 ```cpp
-#include <grpc_utils/AsyncReadStream.h>
+#include <grpc_async_stream/AsyncReadStream.h>
 
-grpc_utils::AsyncReadStream<PriceUpdate> prices;
+grpc_async_stream::AsyncReadStream<PriceUpdate> prices;
 
 prices.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     return stub->AsyncSubscribe(ctx, subscription, cq, tag); // the request is serialized right away
@@ -93,12 +93,12 @@ while (prices.poll([&](PriceUpdate&& update) { apply(update); })) { // never blo
 ## Features
 
 - **Header-only**, one header per call type over a shared call core:
-  [`AsyncWriteStream.h`](include/grpc_utils/AsyncWriteStream.h) (client-streaming RPCs),
-  [`AsyncReadStream.h`](include/grpc_utils/AsyncReadStream.h) (server-streaming RPCs) and
-  [`AsyncReadWriteStream.h`](include/grpc_utils/AsyncReadWriteStream.h) (bidirectional-streaming RPCs), with
-  [`AsyncCallBase.h`](include/grpc_utils/AsyncCallBase.h) holding what they share; works with any protobuf
+  [`AsyncWriteStream.h`](include/grpc_async_stream/AsyncWriteStream.h) (client-streaming RPCs),
+  [`AsyncReadStream.h`](include/grpc_async_stream/AsyncReadStream.h) (server-streaming RPCs) and
+  [`AsyncReadWriteStream.h`](include/grpc_async_stream/AsyncReadWriteStream.h) (bidirectional-streaming RPCs), with
+  [`AsyncCallBase.h`](include/grpc_async_stream/AsyncCallBase.h) holding what they share; works with any protobuf
   request/response pair.
-- **Reusable test utilities** ([`include/grpc_test_utils`](include/grpc_test_utils), CMake target
+- **Reusable test utilities** ([`include/grpc_async_stream_test`](include/grpc_async_stream_test), CMake target
   `GrpcAsyncStream::TestUtils`): a deterministic fake of the gRPC stream, an in-process gRPC server,
   polling helpers and readable test output, for the tests of products built on the library.
 - **Modern C++20**: concepts constrain the message types, the stream factory and the response handler
@@ -406,11 +406,11 @@ Invariant (checked by the tests):
 
 ## API reference
 
-All types live in namespace `grpc_utils`.
+All types live in namespace `grpc_async_stream`.
 
 ### `AsyncWriteStream<RequestProto>`
 
-Header `<grpc_utils/AsyncWriteStream.h>`. A client-streaming call: the same write side, queue, states and
+Header `<grpc_async_stream/AsyncWriteStream.h>`. A client-streaming call: the same write side, queue, states and
 statistics as `AsyncReadWriteStream` (see its table below), without reads.
 
 | Member | Description |
@@ -422,7 +422,7 @@ statistics as `AsyncReadWriteStream` (see its table below), without reads.
 
 ### `AsyncReadStream<ResponseProto>`
 
-Header `<grpc_utils/AsyncReadStream.h>`. A server-streaming call: one request, many responses.
+Header `<grpc_async_stream/AsyncReadStream.h>`. A server-streaming call: one request, many responses.
 
 | Member | Description |
 |---|---|
@@ -433,7 +433,7 @@ Header `<grpc_utils/AsyncReadStream.h>`. A server-streaming call: one request, m
 
 ### `AsyncReadWriteStream<RequestProto, ResponseProto>`
 
-Header `<grpc_utils/AsyncReadWriteStream.h>` (includes the other headers). Derives from
+Header `<grpc_async_stream/AsyncReadWriteStream.h>` (includes the other headers). Derives from
 `AsyncReadStream<ResponseProto, AsyncWriteStream<RequestProto, detail::AsyncCallBase<ClientAsyncReaderWriterInterface<RequestProto, ResponseProto>>>>`
 (see [Architecture](#architecture)), so it has the members of both.
 
@@ -490,11 +490,11 @@ log("send result: {}, state: {}", magic_enum::enum_name(stream.sendRequest(reque
     magic_enum::enum_name(stream.state()));
 
 // Parse the overflow policy from configuration, falling back to the default
-const auto policy = magic_enum::enum_cast<grpc_utils::WriteOverflowPolicy>(config["overflow_policy"])
-                        .value_or(grpc_utils::WriteOverflowPolicy::DropOldest);
+const auto policy = magic_enum::enum_cast<grpc_async_stream::WriteOverflowPolicy>(config["overflow_policy"])
+                        .value_or(grpc_async_stream::WriteOverflowPolicy::DropOldest);
 
 // Count sendRequest() outcomes per result
-std::array<std::uint64_t, magic_enum::enum_count<grpc_utils::SendResult>()> outcomes{};
+std::array<std::uint64_t, magic_enum::enum_count<grpc_async_stream::SendResult>()> outcomes{};
 ++outcomes[*magic_enum::enum_index(stream.sendRequest(request))];
 ```
 
@@ -510,14 +510,15 @@ std::array<std::uint64_t, magic_enum::enum_count<grpc_utils::SendResult>()> outc
 
 `constexpr bool isAccepted(SendResult)` returns true for the first three.
 
-> **Header location (2.0):** include `<grpc_utils/AsyncReadWriteStream.h>` instead of `<AsyncReadWriteStream.h>`.
+> **Header location (2.0):** include `<grpc_async_stream/AsyncReadWriteStream.h>` instead of `<AsyncReadWriteStream.h>`.
 >
 > **Migrating to 2.0:** the header now requires C++20 (it uses concepts, `using enum` and designated
 > initializers); build with `-std=c++20` / `/std:c++20` or later, and the root namespace was renamed from
-> `Network` to `grpc_utils` (replace `Network::` with `grpc_utils::`). The API is otherwise unchanged from 1.1.
+> `Network` to `grpc_async_stream` (replace `Network::` with `grpc_async_stream::`). The API is otherwise
+> unchanged from 1.1.
 >
 > **Migrating from 1.0:** `sendRequest()` used to return `bool` (`false` = not writable).
-> Replace `if (!stream.sendRequest(r))` with `if (!grpc_utils::isAccepted(stream.sendRequest(r)))`,
+> Replace `if (!stream.sendRequest(r))` with `if (!grpc_async_stream::isAccepted(stream.sendRequest(r)))`,
 > or compare with `SendResult::NotWritable` to keep the exact old meaning. The write queue used to be
 > unbounded; construct the stream with `WriteQueueLimits::unbounded()` for the old behaviour.
 
@@ -534,18 +535,18 @@ while (stream.pollFor(onResponse, std::chrono::milliseconds(100))) {}
 log(stream.status());
 
 // Telemetry: keep at most ~1 s of 100 Hz samples, newest data wins
-grpc_utils::AsyncReadWriteStream<Sample, Ack> telemetry({
+grpc_async_stream::AsyncReadWriteStream<Sample, Ack> telemetry({
     .max_messages    = 100,
     .max_bytes       = 1 << 20,
-    .overflow_policy = grpc_utils::WriteOverflowPolicy::DropOldest,
+    .overflow_policy = grpc_async_stream::WriteOverflowPolicy::DropOldest,
 });
 
 // Only change what differs from the defaults (1024 messages, 64 MiB, DropOldest)
-stream.setWriteQueueLimits({.overflow_policy = grpc_utils::WriteOverflowPolicy::DropNewest});
+stream.setWriteQueueLimits({.overflow_policy = grpc_async_stream::WriteOverflowPolicy::DropNewest});
 
 // Client-streaming upload with a deadline: the response arrives with the final status
 UploadSummary summary;
-grpc_utils::AsyncWriteStream<UploadChunk> upload({.max_messages = 64});
+grpc_async_stream::AsyncWriteStream<UploadChunk> upload({.max_messages = 64});
 upload.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     ctx->set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(30));
     return stub->AsyncUpload(ctx, &summary, cq, tag);
@@ -797,12 +798,12 @@ built on the [test utilities](#test-utilities-for-your-own-tests):
 
 | Suite | File | Approach |
 |---|---|---|
-| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` (`grpc_test_utils/FakeReaderWriter.h`) that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish, and one event per `pollFor()` call; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
+| `[lifecycle]` | `tests/StreamLifecycleTests.cpp` | State machine driven through a **fake** `ClientAsyncReaderWriterInterface` (`grpc_async_stream_test/FakeReaderWriter.h`) that completes operations only when the test says so (via `grpc::Alarm` on the stream's completion queue). Deterministic ordering of start, reads, writes, half-close and finish, and one event per `pollFor()` call; the fake also records every **gRPC API contract violation** (concurrent writes, write before start-call, Finish with outstanding operations, double Finish, …) and tests assert there are none. |
 | `[write-queue]` | `tests/WriteQueueTests.cpp` | Bounded queue: message and byte limits, both overflow policies, oversized requests, zero-capacity queue, run-time limit changes, statistics and the accounting invariant, and a 200 000-request flood proving the queue never exceeds its limits. |
-| `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to the repository's test service (`tests/support/TestServer.*`) in an **in-process server** (`grpc_test_utils/InProcessServer.h`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
+| `[integration]` | `tests/IntegrationTests.cpp` | Real gRPC calls to the repository's test service (`tests/support/TestServer.*`) in an **in-process server** (`grpc_async_stream_test/InProcessServer.h`): ordered echo of 1000 requests, ping-pong from the handler, client metadata, 5000-response server bursts, server error statuses, server-initiated end, client cancellation observed by the server, deadline expiry, unreachable server, 50 sequential calls on one object, and a slow server under a 20 000 × 1 KiB flood verifying bounded queue occupancy, drop accounting and in-order delivery of everything written. |
 | `[write-stream]` | `tests/WriteStreamTests.cpp` | `AsyncWriteStream` for client-streaming calls: the state machine through a fake `ClientAsyncWriterInterface` (no reads, Finish right after the half-close or after a failed write or start-call, close, reopen, bounded queue, no API contract violations), `poll()` of an idle stream returning without waiting for the completion queue, compile-time checks of the class relations and concepts, and `Upload` calls to the in-process test server (all requests in order with the response, empty upload, server errors, early server reply, cancellation, deadline, unreachable server, sequential calls, slow server with a bounded queue). |
 | `[read-stream]` | `tests/ReadStreamTests.cpp` | `AsyncReadStream` for server-streaming calls and the composition of the stream classes: compile-time checks of the layering (single inheritance, one core, no polymorphism) and the concepts; the state machine through a fake `ClientAsyncReaderInterface` (request passed to the stub, reading before the start-call completes, end of stream, Finish waiting for the start-call, failed start-call, close, re-entrant close, reopen, no writes); and `Subscribe` calls to the in-process test server (5000-response burst in order, single and empty responses, server errors, cancellation observed by the server, deadline, unreachable server, sequential calls). |
-| `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used the way a product's tests would use them, with nothing but `<grpc_utils/…>` and `<grpc_test_utils/…>`: a product message type of its own driven through the fake call, and a generic echo service (no generated code) called through an `InProcessServer`. |
+| `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used the way a product's tests would use them, with nothing but `<grpc_async_stream/…>` and `<grpc_async_stream_test/…>`: a product message type of its own driven through the fake call, and a generic echo service (no generated code) called through an `InProcessServer`. |
 
 In addition, `GrpcAsyncStreamHeaderChecks` compiles every public header on its own, with the full
 warning flags, so each header stays self-contained.
@@ -916,7 +917,7 @@ What the numbers show:
 
 The utilities this project's tests are built on are published for the tests of products that use the
 library, as the header-only CMake target **`GrpcAsyncStream::TestUtils`** with headers under
-`<grpc_test_utils/…>` (namespace `grpc_test_utils`):
+`<grpc_async_stream_test/…>` (namespace `grpc_async_stream_test`):
 
 | Header | Contents | Needs |
 |---|---|---|
@@ -938,30 +939,30 @@ target_link_libraries(product_tests PRIVATE GrpcAsyncStream::TestUtils Catch2::C
 ```
 
 ```cpp
-#include <grpc_test_utils/Catch2StringMakers.h>
-#include <grpc_test_utils/FakeReaderWriter.h>
-#include <grpc_test_utils/StreamTestUtils.h>
+#include <grpc_async_stream_test/Catch2StringMakers.h>
+#include <grpc_async_stream_test/FakeReaderWriter.h>
+#include <grpc_async_stream_test/StreamTestUtils.h>
 
 TEST_CASE("Telemetry client keeps the newest samples when the server stalls")
 {
-    auto call = std::make_shared<grpc_test_utils::FakeCall<Sample, Ack>>();
-    TelemetryClient client(grpc_test_utils::makeFakeStreamFactory(call)); // your code under test
+    auto call = std::make_shared<grpc_async_stream_test::FakeCall<Sample, Ack>>();
+    TelemetryClient client(grpc_async_stream_test::makeFakeStreamFactory(call)); // your code under test
 
     client.publish(makeSamples(5000));     // start-call not completed yet: everything is queued
     call->completeStart();
     // ... complete writes one by one with call->completeWrite(), deliver acks with call->deliver(...)
-    REQUIRE(grpc_test_utils::pollUntil(client.stream(), client.handler(), [&] { return call->writePending(); }));
+    REQUIRE(grpc_async_stream_test::pollUntil(client.stream(), client.handler(), [&] { return call->writePending(); }));
     CHECK(call->violations().empty());
 }
 ```
 
 ```cpp
-#include <grpc_test_utils/InProcessServer.h>
+#include <grpc_async_stream_test/InProcessServer.h>
 
 TEST_CASE("Client talks to the real service implementation")
 {
-    ProductServiceImpl               service;   // your generated service implementation
-    grpc_test_utils::InProcessServer server(service);
+    ProductServiceImpl                      service;   // your generated service implementation
+    grpc_async_stream_test::InProcessServer server(service);
     auto stub = server.makeStub<product::v1::ProductService>();
     // ... open an AsyncReadWriteStream over the stub, exchange messages, check the results
 }
@@ -994,7 +995,7 @@ target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
 ```
 
-**Or simply copy** the headers of `include/grpc_utils` you need (`AsyncCallBase.h` plus `AsyncWriteStream.h`,
+**Or simply copy** the headers of `include/grpc_async_stream` you need (`AsyncCallBase.h` plus `AsyncWriteStream.h`,
 `AsyncReadStream.h` or all of them for `AsyncReadWriteStream.h`) into your sources and link against
 `gRPC::grpc++`.
 
@@ -1016,12 +1017,12 @@ GrpcAsyncStream/
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in
 ├── include/
-│   ├── grpc_utils/                   # the library: GrpcAsyncStream::GrpcAsyncStream (gRPC only)
+│   ├── grpc_async_stream/            # the library: GrpcAsyncStream::GrpcAsyncStream (gRPC only)
 │   │   ├── AsyncCallBase.h           #   call core shared by all streams
 │   │   ├── AsyncWriteStream.h        #   client-streaming calls (write side)
 │   │   ├── AsyncReadStream.h         #   server-streaming calls (read side)
 │   │   └── AsyncReadWriteStream.h    #   bidirectional streams: read side over write side
-│   └── grpc_test_utils/              # reusable test utilities: GrpcAsyncStream::TestUtils
+│   └── grpc_async_stream_test/       # reusable test utilities: GrpcAsyncStream::TestUtils
 │       ├── FakeReaderWriter.h        #   deterministic fakes of the async bidi, writer and reader streams
 │       ├── InProcessServer.h         #   gRPC server reachable through in-process channels
 │       ├── StreamTestUtils.h         #   polling helpers, message-sequence checks

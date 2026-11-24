@@ -3,7 +3,7 @@
 // Requires C++20 (concepts).
 // Depends only on gRPC and the C++ standard library.
 
-#include <grpc_utils/AsyncCallBase.h>
+#include <grpc_async_stream/AsyncCallBase.h>
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
@@ -13,7 +13,7 @@
 #include <cstddef>
 #include <utility>
 
-namespace grpc_utils
+namespace grpc_async_stream
 {
 
 // The read side of an asynchronous client stream: satisfied by
@@ -190,4 +190,4 @@ private:
     ResponseProto m_spare_response;   // cleared buffer for the next read (see handleEvent)
 };
 
-} // namespace grpc_utils
+} // namespace grpc_async_stream

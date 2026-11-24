@@ -20,7 +20,7 @@
 #include <type_traits>
 #include <utility>
 
-namespace grpc_utils
+namespace grpc_async_stream
 {
 
 // States of a call, as reported by state()
@@ -362,4 +362,4 @@ private:
 
 } // namespace detail
 
-} // namespace grpc_utils
+} // namespace grpc_async_stream

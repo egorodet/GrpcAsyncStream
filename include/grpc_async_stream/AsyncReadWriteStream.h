@@ -3,14 +3,14 @@
 // Requires C++20 (concepts, designated initializers, defaulted comparisons).
 // Depends only on gRPC and the C++ standard library.
 
-#include <grpc_utils/AsyncCallBase.h>
-#include <grpc_utils/AsyncReadStream.h>
-#include <grpc_utils/AsyncWriteStream.h>
+#include <grpc_async_stream/AsyncCallBase.h>
+#include <grpc_async_stream/AsyncReadStream.h>
+#include <grpc_async_stream/AsyncWriteStream.h>
 
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
-namespace grpc_utils
+namespace grpc_async_stream
 {
 
 // The callable passed to AsyncReadWriteStream::open(): creates the call with an
@@ -62,4 +62,4 @@ public:
     [[nodiscard]] AsyncReaderWriterInterface* getReaderWriter() const noexcept { return this->getStream(); }
 };
 
-} // namespace grpc_utils
+} // namespace grpc_async_stream
