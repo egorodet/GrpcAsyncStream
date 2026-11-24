@@ -185,6 +185,68 @@ grpc::Status TestStreamService::Upload(grpc::ServerContext* context, grpc::Serve
     return grpc::Status::OK;
 }
 
+grpc::Status TestStreamService::Subscribe(grpc::ServerContext* context, const Request* request,
+                                          grpc::ServerWriter<Response>* writer)
+{
+    ActiveCallGuard active(m_active_calls);
+    ++m_received_requests;
+
+    const std::string metadata_value = clientMetadataValue(context);
+    if (request->delay_us() > 0)
+        interruptibleSleep(context, std::chrono::microseconds(request->delay_us()));
+
+    std::uint64_t server_seq   = 0;
+    bool          write_failed = false;
+    auto          respond      = [&](std::uint64_t id) -> bool {
+        Response response;
+        response.set_id(id);
+        response.set_payload(request->payload());
+        response.set_metadata_value(metadata_value);
+        response.set_server_seq(server_seq++);
+        if (!writer->Write(response))
+        {
+            write_failed = true;
+            return false;
+        }
+        ++m_sent_responses;
+        return true;
+    };
+
+    switch (request->command())
+    {
+    case proto::TestRequest::ECHO:
+        respond(request->id());
+        break;
+
+    case proto::TestRequest::BURST:
+        for (std::uint32_t i = 0; i < request->count(); ++i)
+            if (!respond(request->id() + i))
+                break;
+        break;
+
+    case proto::TestRequest::FAIL:
+        ++m_finished_calls;
+        return grpc::Status(static_cast<grpc::StatusCode>(request->status_code()), request->payload());
+
+    case proto::TestRequest::END:
+        break;
+
+    default:
+        ++m_finished_calls;
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "Unknown command");
+    }
+
+    // A server-streaming write fails only when the call is gone: the client
+    // cancelled it (IsCancelled() may not report that yet at this point)
+    if (write_failed || context->IsCancelled())
+    {
+        ++m_cancelled_calls;
+        return grpc::Status::CANCELLED;
+    }
+    ++m_finished_calls;
+    return grpc::Status::OK;
+}
+
 Request makeEcho(std::uint64_t id, std::string payload)
 {
     Request request;

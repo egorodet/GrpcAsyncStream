@@ -1,10 +1,11 @@
 #pragma once
 
-// Helpers for testing code built on grpc_utils::AsyncReadWriteStream and
-// grpc_utils::AsyncWriteStream: polling a stream until a condition holds or the
-// call ends, and inspecting sequences of messages. Test-framework independent;
-// requires only gRPC.
+// Helpers for testing code built on grpc_utils::AsyncReadWriteStream,
+// grpc_utils::AsyncWriteStream and grpc_utils::AsyncReadStream: polling a stream
+// until a condition holds or the call ends, and inspecting sequences of
+// messages. Test-framework independent; requires only gRPC.
 
+#include <grpc_utils/AsyncReadStream.h>
 #include <grpc_utils/AsyncReadWriteStream.h>
 #include <grpc_utils/AsyncWriteStream.h>
 
@@ -27,7 +28,7 @@ concept PollableStream = requires(Stream& stream) {
     { stream.isOpen() } -> std::convertible_to<bool>;
 };
 
-// A stream polled with the given response handler, like grpc_utils::AsyncReadWriteStream
+// A stream polled with the given response handler, like grpc_utils::AsyncReadWriteStream / AsyncReadStream
 template<typename Stream, typename Handler>
 concept PollableWithHandler = PollableStream<Stream> && requires(Stream& stream, Handler& handler) {
     { stream.pollFor(handler, 1ms) } -> std::convertible_to<bool>;

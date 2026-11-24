@@ -3,19 +3,18 @@
 // Requires C++20 (concepts, designated initializers, defaulted comparisons).
 // Depends only on gRPC and the C++ standard library.
 
+#include <grpc_utils/AsyncCallBase.h>
+
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
 #include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <limits>
-#include <memory>
-#include <type_traits>
 #include <utility>
 
 namespace grpc_utils
@@ -89,7 +88,7 @@ struct WriteQueueStats
     friend constexpr bool operator==(const WriteQueueStats&, const WriteQueueStats&) = default;
 };
 
-// Outcome of AsyncWriteStream::sendRequest() (and AsyncReadWriteStream::sendRequest()).
+// Outcome of sendRequest().
 enum class SendResult
 {
     Written,             // the write has been started immediately
@@ -107,51 +106,6 @@ enum class SendResult
     return result == Written || result == Queued || result == QueuedDroppedOldest;
 }
 
-// States of a call, as reported by AsyncWriteStream::state() / AsyncReadWriteStream::state()
-enum class StreamState
-{
-    Closed,      // no call
-    Open,        // writing (and reading, for AsyncReadWriteStream)
-    HalfClosing, // writesDone() requested, flushing the queued requests before WritesDone
-    HalfClosed,  // WritesDone completed, still reading (AsyncReadWriteStream only)
-    Finishing,   // waiting for the final status: the server ended the stream, a write failed,
-                 // or the half-close of a write-only stream completed
-};
-
-// ---------------------------------------------------------------------------
-// Implementation details
-// ---------------------------------------------------------------------------
-
-namespace detail
-{
-
-// Operation tags. Each stream owns its completion queue, so small integers are
-// sufficient as unique tags and do not depend on member addresses. Declared
-// outside the class templates so that the enum is not a dependent type
-// (required for `using enum`).
-enum class StreamTag : std::uintptr_t
-{
-    Start = 1,
-    Read,
-    Write,
-    WritesDone,
-    Finish,
-};
-
-} // namespace detail
-
-// ---------------------------------------------------------------------------
-// Concepts
-// ---------------------------------------------------------------------------
-
-// A protobuf message (or a type with the same interface) usable as request or response
-template<typename Message>
-concept ProtobufMessage = std::default_initializable<Message> && std::movable<Message> &&
-                          requires(Message& message, const Message& const_message) {
-                              { const_message.ByteSizeLong() } -> std::convertible_to<std::size_t>;
-                              message.Clear();
-                          };
-
 // The write side of an asynchronous client stream: satisfied by
 // grpc::ClientAsyncWriterInterface<Request> (client-streaming calls) and
 // grpc::ClientAsyncReaderWriterInterface<Request, Response> (bidirectional calls)
@@ -163,21 +117,13 @@ concept AsyncWriterInterfaceFor =
         stream.Finish(status, tag);
     };
 
-// The callable passed to AsyncWriteStream::open(): creates the call with an
-// Async* stub method and returns the stream interface, e.g. for a client-streaming method
-//   [&](auto* ctx, auto* cq, void* tag) { return stub->AsyncUpload(ctx, &summary, cq, tag); }
-template<typename Factory, typename StreamInterface>
-concept WriteStreamFactoryFor =
-    std::invocable<Factory, grpc::ClientContext*, grpc::CompletionQueue*, void*> &&
-    std::convertible_to<std::invoke_result_t<Factory, grpc::ClientContext*, grpc::CompletionQueue*, void*>,
-                        std::unique_ptr<StreamInterface>>;
-
 // A wrapper over the asynchronous client-streaming call
 // (grpc::ClientAsyncWriterInterface) that encapsulates the generic gRPC async
-// write machinery: the completion queue, the operation tags, the non-blocking
-// event polling, write serialization with a bounded write queue, half-close and
-// the final status retrieval (Finish). The protocol-specific part (creating the
-// call via the stub method) is provided by the caller.
+// write machinery: write serialization with a bounded write queue, half-close
+// and the final status retrieval, on top of the call core (detail::AsyncCallBase:
+// completion queue, operation tags, non-blocking event polling, cancellation).
+// The protocol-specific part (creating the call via the stub method) is
+// provided by the caller.
 //
 // The single response of a client-streaming call is written by gRPC into the
 // message passed to the Async* stub method in the stream factory. That message
@@ -192,19 +138,20 @@ concept WriteStreamFactoryFor =
 // stream therefore notices that the call has ended with its next sendRequest()
 // or writesDone().
 //
-// The class is also the base of AsyncReadWriteStream: the StreamInterface
-// parameter selects the gRPC stream interface, and the protected members let
-// a derived class add a read side that is polled along with the write side.
+// `Base` is the call core by default. AsyncReadWriteStream layers the read side
+// (AsyncReadStream) over this class with the bidirectional stream interface;
+// the write side always sits directly on the core.
 //
 // Threading: NOT thread-safe. open(), close(), sendRequest(), writesDone(),
 // setWriteQueueLimits() and poll() must all be called from the same thread.
 template<ProtobufMessage RequestProto,
-         AsyncWriterInterfaceFor<RequestProto> StreamInterface = grpc::ClientAsyncWriterInterface<RequestProto>>
-class AsyncWriteStream
+         typename Base = detail::AsyncCallBase<grpc::ClientAsyncWriterInterface<RequestProto>>>
+    requires std::same_as<Base, detail::AsyncCallBase<typename Base::AsyncStreamInterface>> &&
+             AsyncWriterInterfaceFor<typename Base::AsyncStreamInterface, RequestProto>
+class AsyncWriteStream : public Base
 {
 public:
-    using AsyncWriterInterface = StreamInterface;
-    using Request              = RequestProto;
+    using Request = RequestProto;
 
     AsyncWriteStream() = default;
     explicit AsyncWriteStream(const WriteQueueLimits& limits)
@@ -218,67 +165,45 @@ public:
     AsyncWriteStream(AsyncWriteStream&&)                 = delete;
     AsyncWriteStream& operator=(AsyncWriteStream&&)      = delete;
 
-    // Opens a new stream. A fresh grpc::ClientContext is created for every call,
-    // because a ClientContext must never be reused for a second RPC. The factory
-    // may configure the context (metadata, deadline, ...) and must create the
-    // stream with the Async* stub flavour, which calls StartCall internally:
+    // Opens a new call (closing any previous one) and resets the statistics.
+    // The factory creates the call with the Async* stub method, e.g.
     //
     //   stream.open([&](grpc::ClientContext* ctx, grpc::CompletionQueue* cq, void* tag) {
     //       return stub->AsyncUpload(ctx, &summary, cq, tag);
     //   });
-    template<WriteStreamFactoryFor<StreamInterface> StreamFactory>
+    //
+    // StartCall sends the initial metadata through the stream's internal write
+    // operation set, which is shared with Write() and WritesDone(). Until the
+    // start-call tag completes, that set is in flight, and issuing a Write would
+    // submit SEND_INITIAL_METADATA a second time, which gRPC rejects with
+    // GRPC_CALL_ERROR_TOO_MANY_OPERATIONS. Requests sent meanwhile are queued.
+    // NOTE: do not cork the initial metadata (set_initial_metadata_corked) on
+    // the context, since then the start-call tag never completes.
+    template<AsyncStreamFactoryFor<typename Base::AsyncStreamInterface> StreamFactory>
     bool open(StreamFactory&& stream_factory)
     {
         close();
-
-        m_context          = std::make_unique<grpc::ClientContext>();
-        m_completion_queue = std::make_unique<grpc::CompletionQueue>();
-        m_status           = grpc::Status::OK;
-        m_stats            = {};
-
-        m_stream = std::forward<StreamFactory>(stream_factory)(
-            m_context.get(), m_completion_queue.get(), toTag(Tag::Start));
-        if (!m_stream)
-        {
-            release();
-            m_status = grpc::Status(grpc::StatusCode::INTERNAL, "Stream factory returned no stream");
-            return false;
-        }
-
-        m_state = State::Open;
-
-        // StartCall sends the initial metadata through the stream's internal write
-        // operation set, which is shared with Write() and WritesDone(). Until the
-        // start-call tag completes, that set is in flight, and issuing a Write
-        // would submit SEND_INITIAL_METADATA a second time, which gRPC rejects with
-        // GRPC_CALL_ERROR_TOO_MANY_OPERATIONS. The start-call is therefore tracked
-        // as an outstanding write; requests sent meanwhile are queued.
-        // NOTE: do not cork the initial metadata (set_initial_metadata_corked) on
-        // the context, since then the start-call tag never completes.
-        m_write_in_progress = true;
-        return true;
+        m_stats = {};
+        return Base::open(std::forward<StreamFactory>(stream_factory));
     }
 
     // Cancels the call (if still active) and releases all resources. Requests
     // still waiting in the write queue are discarded (see WriteQueueStats).
     void close()
     {
-        if (m_state != State::Closed)
-            m_status = grpc::Status(grpc::StatusCode::CANCELLED, "Stream closed by the client");
-        release();
+        Base::close();
+        discardPendingWrites();
+        if (m_stats.write_in_flight)
+        {
+            // Cancelled before the write was confirmed
+            ++m_stats.discarded_messages;
+            m_stats.write_in_flight = false;
+        }
+        m_current_write.Clear();
     }
 
-    // True while the call is active (including half-closed / finishing states).
-    [[nodiscard]] bool isOpen() const noexcept { return m_stream != nullptr; }
-
     // True while new requests may be sent.
-    [[nodiscard]] bool canWrite() const noexcept { return m_state == State::Open; }
-
-    // Final status of the last call: the server status after a regular end of the
-    // stream, CANCELLED after a client-side close(), OK while the call is active.
-    [[nodiscard]] const grpc::Status& status() const noexcept { return m_status; }
-
-    [[nodiscard]] StreamInterface* getWriter() const noexcept { return m_stream.get(); }
+    [[nodiscard]] bool canWrite() const noexcept { return this->state() == State::Open; }
 
     // Write queue limits; may be changed at any time. Tightening the limits
     // immediately applies the overflow policy to the already queued requests.
@@ -299,10 +224,10 @@ public:
     [[nodiscard]] const WriteQueueStats& writeQueueStats() const noexcept { return m_stats; }
 
     // True while a write (or the start-call / half-close) is outstanding.
-    [[nodiscard]] bool isWriteInProgress() const noexcept { return m_write_in_progress; }
-
-    // Current state of the call, for diagnostics and logging (see StreamState).
-    [[nodiscard]] StreamState state() const noexcept { return m_state; }
+    [[nodiscard]] bool isWriteInProgress() const noexcept
+    {
+        return this->isStartPending() || this->isWriteOperationPending();
+    }
 
     // Enqueues the given request to be written into the stream. Only one write
     // may be outstanding at a time, and none before the start-call has
@@ -312,11 +237,11 @@ public:
     // stays bounded however fast requests are produced.
     SendResult sendRequest(RequestProto request)
     {
-        if (m_state != State::Open)
+        if (this->state() != State::Open)
             return SendResult::NotWritable;
 
         ++m_stats.submitted_messages;
-        if (!m_write_in_progress) [[likely]]
+        if (!isWriteInProgress()) [[likely]]
         {
             startWrite(std::move(request));
             return SendResult::Written;
@@ -331,11 +256,11 @@ public:
     // delivering responses until the server ends the call.
     bool writesDone()
     {
-        if (m_state != State::Open)
+        if (this->state() != State::Open)
             return false;
 
-        m_state = State::HalfClosing;
-        if (!m_write_in_progress)
+        this->setState(State::HalfClosing);
+        if (!isWriteInProgress())
             startWritesDone();
         return true;
     }
@@ -345,9 +270,7 @@ public:
     // reason), true otherwise.
     bool poll(std::size_t max_events = 64)
     {
-        // An already expired deadline makes AsyncNext return immediately with
-        // GOT_EVENT if an event is available, or TIMEOUT otherwise
-        return processEvents(ignoreRead, max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
+        return this->processEvents(eventHandler(), max_events, gpr_inf_past(GPR_CLOCK_MONOTONIC));
     }
 
     // Like poll(), but waits up to `timeout` for the first event, which avoids
@@ -356,100 +279,17 @@ public:
     template<typename Rep, typename Period>
     bool pollFor(std::chrono::duration<Rep, Period> timeout, std::size_t max_events = 64)
     {
-        return processEvents(ignoreRead, max_events, deadlineAfter(timeout));
+        return this->processEvents(eventHandler(), max_events, Base::deadlineAfter(timeout));
     }
 
 protected:
     using State = StreamState;
     using Tag   = detail::StreamTag;
 
-    // Selects the constructor for derived streams with a read side: their call
-    // stays open after the half-close until the read side has ended.
-    struct ReadSideTag
-    {
-    };
-
-    AsyncWriteStream(ReadSideTag /*read_side*/, const WriteQueueLimits& limits)
-        : m_limits(limits)
-        , m_has_read_side(true)
-    {
-    }
-
-    // The stream of the active call, nullptr when closed
-    [[nodiscard]] StreamInterface* stream() const noexcept { return m_stream.get(); }
-
-    static void* toTag(Tag tag) noexcept
-    {
-        return reinterpret_cast<void*>(static_cast<std::underlying_type_t<Tag>>(tag));
-    }
-
-    template<typename Rep, typename Period>
-    static std::chrono::system_clock::time_point deadlineAfter(std::chrono::duration<Rep, Period> timeout)
-    {
-        return std::chrono::system_clock::now() + std::chrono::duration_cast<std::chrono::system_clock::duration>(timeout);
-    }
-
-    // Processes up to max_events events, waiting until `first_deadline` for the
-    // first one. Completions of the read side (Tag::Read) are passed to
-    // `on_read(ok)`, which may call any public member function (re-entrancy).
-    // Returns false once the call has ended and the stream has been released.
-    template<typename ReadHandler, typename Deadline>
-    bool processEvents(ReadHandler& on_read, std::size_t max_events, const Deadline& first_deadline)
-    {
-        for (std::size_t i = 0; i < max_events && m_stream; ++i)
-        {
-            void* tag = nullptr;
-            bool  ok  = false;
-
-            const grpc::CompletionQueue::NextStatus next_status =
-                i == 0 ? m_completion_queue->AsyncNext(&tag, &ok, first_deadline)
-                       : m_completion_queue->AsyncNext(&tag, &ok, gpr_inf_past(GPR_CLOCK_MONOTONIC));
-            if (next_status != grpc::CompletionQueue::GOT_EVENT)
-                break;
-
-            if (!handleEvent(fromTag(tag), ok, on_read))
-                return false;
-        }
-
-        return m_stream != nullptr;
-    }
-
-    // The read side reports whether a read is outstanding: Finish is requested
-    // only once no read and no write operation is outstanding.
-    void setReadInProgress(bool in_progress) noexcept { m_read_in_progress = in_progress; }
-
-    // Stops writing (the server ended the stream or an operation failed) and
-    // requests the final status once all outstanding operations are done.
-    void enterFinishing()
-    {
-        m_state = State::Finishing;
-        discardPendingWrites();
-        tryFinish();
-    }
-
-private:
-    struct PendingWrite
-    {
-        RequestProto request;
-        std::size_t  bytes;
-    };
-
-    // Read handler of streams without a read side: never called, since such a
-    // stream starts no reads
-    static void ignoreRead(bool /*ok*/) noexcept {}
-
-    static Tag fromTag(void* tag) noexcept
-    {
-        const auto value = reinterpret_cast<std::uintptr_t>(tag);
-        // Only this stream posts to its private completion queue: anything else is a bug
-        assert(value >= static_cast<std::uintptr_t>(Tag::Start) && value <= static_cast<std::uintptr_t>(Tag::Finish) &&
-               "unknown completion queue tag");
-        return static_cast<Tag>(value);
-    }
-
-    // Returns false when the call has ended and the stream has been released.
-    template<typename ReadHandler>
-    bool handleEvent(Tag tag, bool ok, ReadHandler& on_read)
+    // Handles the completions of the start-call, writes and the half-close, and
+    // passes the others down to the call core.
+    template<typename Context>
+    void handleEvent(Tag tag, bool ok, Context& context)
     {
         switch (tag)
         {
@@ -457,8 +297,7 @@ private:
         case Start:
             // The initial metadata has been sent and the write operation set is
             // free again, so the requests queued since open() can be sent now.
-            m_write_in_progress = false;
-            if (!ok) [[unlikely]]
+            if (!this->completeStart(ok)) [[unlikely]]
             {
                 // The call could not be started. An outstanding read fails as
                 // well, after which Finish retrieves the actual error status.
@@ -468,12 +307,8 @@ private:
             onWriteSlotFree();
             break;
 
-        case Read:
-            on_read(ok);
-            break;
-
         case Write:
-            m_write_in_progress     = false;
+            this->setWriteOperationPending(false);
             m_stats.write_in_flight = false;
             if (!ok) [[unlikely]]
             {
@@ -489,22 +324,44 @@ private:
             break;
 
         case WritesDone:
-            m_write_in_progress = false;
-            if (!m_has_read_side)
-                m_state = State::Finishing; // nothing is left to wait for but the final status
-            else if (m_state == State::HalfClosing)
-                m_state = State::HalfClosed;
-            tryFinish();
+            this->setWriteOperationPending(false);
+            if (!this->hasReadSide())
+            {
+                // Nothing is left to wait for but the final status
+                enterFinishing();
+                break;
+            }
+            if (this->state() == State::HalfClosing)
+                this->setState(State::HalfClosed);
+            this->tryFinish();
             break;
 
-        case Finish:
-            // m_status now holds the final status reported by gRPC
-            m_finish_in_progress = false;
-            m_state              = State::Closed;
-            release();
-            return false;
+        default:
+            Base::handleEvent(tag, ok, context);
+            break;
         }
-        return true;
+    }
+
+    // Stops writing: queued requests can no longer be delivered.
+    void enterFinishing()
+    {
+        discardPendingWrites();
+        Base::enterFinishing();
+    }
+
+private:
+    struct PendingWrite
+    {
+        RequestProto request;
+        std::size_t  bytes;
+    };
+
+    auto eventHandler()
+    {
+        return [this](Tag tag, bool ok) {
+            detail::NoEventContext context;
+            handleEvent(tag, ok, context);
+        };
     }
 
     SendResult enqueue(RequestProto request)
@@ -600,15 +457,15 @@ private:
     {
         // The message is kept alive in a member until the write completes
         m_current_write = std::move(request);
-        m_stream->Write(m_current_write, toTag(Tag::Write));
-        m_write_in_progress     = true;
+        this->stream()->Write(m_current_write, Base::toTag(Tag::Write));
+        this->setWriteOperationPending(true);
         m_stats.write_in_flight = true;
     }
 
     void startWritesDone()
     {
-        m_stream->WritesDone(toTag(Tag::WritesDone));
-        m_write_in_progress = true;
+        this->stream()->WritesDone(Base::toTag(Tag::WritesDone));
+        this->setWriteOperationPending(true);
     }
 
     // Called when the write operation set becomes free (start-call or a write
@@ -617,84 +474,18 @@ private:
     void onWriteSlotFree()
     {
         if (!m_pending_writes.empty())
-        {
             startWrite(popPendingFront());
-        }
-        else if (m_state == State::HalfClosing)
-        {
+        else if (this->state() == State::HalfClosing)
             startWritesDone();
-        }
         else
-        {
-            tryFinish();
-        }
+            this->tryFinish();
     }
-
-    // Finish is issued exactly once, after the read side (if any) has ended and
-    // no write operation is outstanding.
-    void tryFinish()
-    {
-        if (m_state != State::Finishing || m_read_in_progress || m_write_in_progress || m_finish_in_progress)
-            return;
-
-        m_stream->Finish(&m_status, toTag(Tag::Finish));
-        m_finish_in_progress = true;
-    }
-
-    // Tears the call down without touching m_status.
-    void release()
-    {
-        // Cancelling completes all outstanding operations with ok == false
-        if (m_context)
-            m_context->TryCancel();
-
-        // Drain the queue BEFORE destroying anything the pending operations refer to
-        if (m_completion_queue)
-        {
-            m_completion_queue->Shutdown();
-            void* tag = nullptr;
-            bool  ok  = false;
-            while (m_completion_queue->Next(&tag, &ok))
-            {
-            }
-        }
-
-        // Destroy in dependency order: stream -> completion queue -> context
-        m_stream.reset();
-        m_completion_queue.reset();
-        m_context.reset();
-
-        discardPendingWrites();
-        if (m_stats.write_in_flight)
-        {
-            // Cancelled before the write was confirmed
-            ++m_stats.discarded_messages;
-            m_stats.write_in_flight = false;
-        }
-        m_current_write.Clear();
-        m_read_in_progress   = false;
-        m_write_in_progress  = false;
-        m_finish_in_progress = false;
-        m_state              = State::Closed;
-    }
-
-    std::unique_ptr<grpc::ClientContext>   m_context;
-    std::unique_ptr<grpc::CompletionQueue> m_completion_queue;
-    std::unique_ptr<StreamInterface>       m_stream;
 
     RequestProto             m_current_write;
     std::deque<PendingWrite> m_pending_writes;
-    grpc::Status             m_status;
-
-    WriteQueueLimits m_limits;
-    WriteQueueStats  m_stats;
-    std::size_t      m_queue_peak_since_shrink = 0;
-
-    State      m_state              = State::Closed;
-    const bool m_has_read_side      = false;
-    bool       m_read_in_progress   = false;
-    bool       m_write_in_progress  = false;
-    bool       m_finish_in_progress = false;
+    WriteQueueLimits         m_limits;
+    WriteQueueStats          m_stats;
+    std::size_t              m_queue_peak_since_shrink = 0;
 };
 
 } // namespace grpc_utils

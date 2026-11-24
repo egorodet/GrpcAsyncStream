@@ -135,13 +135,16 @@ bool waitFor(Predicate&& predicate, std::chrono::milliseconds timeout = std::chr
 
 TEST_CASE("AsyncReadWriteStream is an AsyncWriteStream over the bidirectional interface", "[write-stream][concepts]")
 {
+    using grpc_utils::AsyncStreamFactoryFor;
     using grpc_utils::AsyncWriterInterfaceFor;
-    using grpc_utils::WriteStreamFactoryFor;
     using ReadWriteStream = grpc_utils::AsyncReadWriteStream<Request, Response>;
     using BidiInterface   = grpc::ClientAsyncReaderWriterInterface<Request, Response>;
+    using BidiCore        = grpc_utils::detail::AsyncCallBase<BidiInterface>;
 
-    static_assert(std::is_base_of_v<grpc_utils::AsyncWriteStream<Request, BidiInterface>, ReadWriteStream>);
-    static_assert(std::is_same_v<WriteStream::AsyncWriterInterface, grpc::ClientAsyncWriterInterface<Request>>);
+    static_assert(std::is_base_of_v<grpc_utils::AsyncWriteStream<Request, BidiCore>, ReadWriteStream>);
+    static_assert(std::is_same_v<WriteStream::AsyncStreamInterface, grpc::ClientAsyncWriterInterface<Request>>);
+    static_assert(std::is_base_of_v<grpc_utils::detail::AsyncCallBase<grpc::ClientAsyncWriterInterface<Request>>,
+                                    WriteStream>);
 
     // Both gRPC client stream interfaces with a write side qualify, read-only ones do not
     static_assert(AsyncWriterInterfaceFor<grpc::ClientAsyncWriterInterface<Request>, Request>);
@@ -151,10 +154,10 @@ TEST_CASE("AsyncReadWriteStream is an AsyncWriteStream over the bidirectional in
 
     using WriterFactory = decltype(makeFakeWriterFactory(std::shared_ptr<Call>(), static_cast<UploadSummary*>(nullptr)));
     using BidiFactory   = decltype(makeFakeStreamFactory(std::shared_ptr<FakeCall<Request, Response>>()));
-    static_assert(WriteStreamFactoryFor<WriterFactory, grpc::ClientAsyncWriterInterface<Request>>);
-    static_assert(!WriteStreamFactoryFor<BidiFactory, grpc::ClientAsyncWriterInterface<Request>>);
-    static_assert(WriteStreamFactoryFor<BidiFactory, BidiInterface>);
-    static_assert(!WriteStreamFactoryFor<WriterFactory, BidiInterface>);
+    static_assert(AsyncStreamFactoryFor<WriterFactory, grpc::ClientAsyncWriterInterface<Request>>);
+    static_assert(!AsyncStreamFactoryFor<BidiFactory, grpc::ClientAsyncWriterInterface<Request>>);
+    static_assert(AsyncStreamFactoryFor<BidiFactory, BidiInterface>);
+    static_assert(!AsyncStreamFactoryFor<WriterFactory, BidiInterface>);
 
     // A write-only stream is polled without a handler; the bidirectional stream
     // hides that overload, so its responses cannot be lost by mistake
@@ -176,7 +179,7 @@ TEST_CASE("A write stream is closed until opened", "[write-stream]")
     CHECK(stream.state() == StreamState::Closed);
     CHECK_FALSE(stream.isOpen());
     CHECK_FALSE(stream.canWrite());
-    CHECK(stream.getWriter() == nullptr);
+    CHECK(stream.getStream() == nullptr);
     CHECK(stream.status().ok());
     CHECK(stream.sendRequest(makeEcho(1)) == SendResult::NotWritable);
     CHECK_FALSE(stream.writesDone());
@@ -189,7 +192,7 @@ TEST_CASE("Write stream open() fails when the factory returns no stream", "[writ
 {
     WriteStream stream;
     const bool  opened = stream.open([](grpc::ClientContext*, grpc::CompletionQueue*, void*) {
-        return std::unique_ptr<WriteStream::AsyncWriterInterface>();
+        return std::unique_ptr<WriteStream::AsyncStreamInterface>();
     });
     CHECK_FALSE(opened);
     CHECK_FALSE(stream.isOpen());
@@ -204,7 +207,7 @@ TEST_CASE("A write stream starts no reads and queues requests until the start-ca
     CHECK(f.stream.isOpen());
     CHECK(f.stream.canWrite());
     CHECK(f.stream.state() == StreamState::Open);
-    CHECK(f.stream.getWriter() != nullptr);
+    CHECK(f.stream.getStream() != nullptr);
     CHECK(f.call->startPending());
     CHECK_FALSE(f.call->readPending());
     CHECK(f.stream.isWriteInProgress());

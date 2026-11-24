@@ -32,6 +32,8 @@ public:
     grpc::Status Chat(grpc::ServerContext* context, grpc::ServerReaderWriter<Response, Request>* stream) override;
     grpc::Status Upload(grpc::ServerContext* context, grpc::ServerReader<Request>* reader,
                         UploadSummary* summary) override;
+    grpc::Status Subscribe(grpc::ServerContext* context, const Request* request,
+                           grpc::ServerWriter<Response>* writer) override;
 
     // Delay applied before reading every request: simulates a slow consumer,
     // which makes gRPC flow control push back on the client writes.

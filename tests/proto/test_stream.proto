@@ -52,4 +52,9 @@ service TestStream
     // recorded, FAIL ends the call with an error, END ends it with OK and the
     // summary without waiting for the half-close.
     rpc Upload(stream TestRequest) returns (UploadSummary);
+
+    // Server-streaming: the server handles the single request like Chat does
+    // (ECHO: one response, BURST: `count` responses, FAIL: error status,
+    // END: no response) and then ends the stream with OK.
+    rpc Subscribe(TestRequest) returns (stream TestResponse);
 }

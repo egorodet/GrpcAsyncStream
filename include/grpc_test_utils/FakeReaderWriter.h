@@ -1,8 +1,9 @@
 #pragma once
 
 // Deterministic fakes of grpc::ClientAsyncReaderWriterInterface (bidirectional
-// calls, FakeReaderWriter) and grpc::ClientAsyncWriterInterface (client-streaming
-// calls, FakeWriter), both driven by one FakeCall.
+// calls, FakeReaderWriter), grpc::ClientAsyncWriterInterface (client-streaming
+// calls, FakeWriter) and grpc::ClientAsyncReaderInterface (server-streaming
+// calls, FakeReader), all driven by one FakeCall.
 //
 // The fake records every operation started by the stream wrapper and
 // completes it only when the test asks for it, by posting the operation tag to
@@ -42,6 +43,9 @@ public:
 
     // All messages passed to Write(), in order
     [[nodiscard]] const std::vector<W>& writes() const { return m_writes; }
+
+    // The request of a server-streaming call, passed to the stub method (see makeFakeReaderFactory)
+    [[nodiscard]] const std::optional<W>& initialRequest() const { return m_initial_request; }
 
     // Descriptions of gRPC API contract violations committed by the stream
     [[nodiscard]] const std::vector<std::string>& violations() const { return m_violations; }
@@ -92,7 +96,7 @@ public:
         post(m_finish_tag, true);
     }
 
-    // ----- Called by FakeReaderWriter and FakeWriter -----
+    // ----- Called by the fake streams -----
 
     void onStartCall(grpc::CompletionQueue* cq, void* tag, R* response = nullptr)
     {
@@ -100,6 +104,8 @@ public:
         m_start_tag = tag;
         m_response  = response;
     }
+
+    void onInitialRequest(const W& request) { m_initial_request = request; }
 
     void onRead(R* buffer, void* tag)
     {
@@ -194,6 +200,7 @@ private:
     bool          m_writes_done_called = false;
     int           m_finish_calls       = 0;
 
+    std::optional<W>                         m_initial_request;
     std::vector<W>                           m_writes;
     std::vector<std::string>                 m_violations;
     std::deque<std::unique_ptr<grpc::Alarm>> m_alarms;
@@ -248,6 +255,32 @@ private:
     std::shared_ptr<FakeCall<W, R>> m_call;
 };
 
+template<typename W, typename R>
+class FakeReader final : public grpc::ClientAsyncReaderInterface<R>
+{
+public:
+    explicit FakeReader(std::shared_ptr<FakeCall<W, R>> call)
+        : m_call(std::move(call))
+    {
+    }
+    ~FakeReader() override { m_call->onDestroyed(); }
+
+    // Mirrors what the generated Async* stub methods do: take the request and start the call right away
+    void start(grpc::CompletionQueue* cq, void* tag, const W& request)
+    {
+        m_call->onInitialRequest(request);
+        m_call->onStartCall(cq, tag);
+    }
+
+    void StartCall(void* /*tag*/) override {}
+    void ReadInitialMetadata(void* /*tag*/) override {}
+    void Finish(grpc::Status* status, void* tag) override { m_call->onFinish(status, tag); }
+    void Read(R* msg, void* tag) override { m_call->onRead(msg, tag); }
+
+private:
+    std::shared_ptr<FakeCall<W, R>> m_call;
+};
+
 // Stream factory for AsyncReadWriteStream::open() producing a fake stream bound to `call`
 template<typename W, typename R>
 auto makeFakeStreamFactory(std::shared_ptr<FakeCall<W, R>> call)
@@ -270,6 +303,20 @@ auto makeFakeWriterFactory(std::shared_ptr<FakeCall<W, R>> call, R* response)
                -> std::unique_ptr<grpc::ClientAsyncWriterInterface<W>> {
         auto stream = std::make_unique<FakeWriter<W, R>>(call);
         stream->start(cq, tag, response);
+        return stream;
+    };
+}
+
+// Stream factory for AsyncReadStream::open() producing a fake server-streaming
+// call bound to `call`. Like a generated Async* stub method, it takes the request,
+// which FakeCall::initialRequest() then returns.
+template<typename W, typename R>
+auto makeFakeReaderFactory(std::shared_ptr<FakeCall<W, R>> call, W request)
+{
+    return [call, request = std::move(request)](grpc::ClientContext*, grpc::CompletionQueue* cq, void* tag)
+               -> std::unique_ptr<grpc::ClientAsyncReaderInterface<R>> {
+        auto stream = std::make_unique<FakeReader<W, R>>(call);
+        stream->start(cq, tag, request);
         return stream;
     };
 }

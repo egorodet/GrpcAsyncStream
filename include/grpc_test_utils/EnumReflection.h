@@ -4,6 +4,7 @@
 // (https://github.com/Neargye/magic_enum): names, parsing, counts and indexes,
 // e.g. for readable test output or per-result histograms. Test-framework independent.
 
+#include <grpc_utils/AsyncCallBase.h>
 #include <grpc_utils/AsyncWriteStream.h>
 
 #include <magic_enum/magic_enum.hpp>
