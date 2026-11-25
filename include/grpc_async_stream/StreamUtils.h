@@ -4,10 +4,10 @@
 
 #pragma once
 
-// Helpers for testing code built on grpc_async_stream::AsyncReadWriteStream,
-// grpc_async_stream::AsyncWriteStream and grpc_async_stream::AsyncReadStream: polling a stream
-// until a condition holds or the call ends, and inspecting sequences of
-// messages. Test-framework independent; requires only gRPC.
+// Helpers for code built on AsyncReadWriteStream, AsyncWriteStream and
+// AsyncReadStream, in production code and tests alike: polling a stream until
+// a condition holds or the call ends, and inspecting sequences of messages.
+// Requires only gRPC.
 
 #include <grpc_async_stream/AsyncReadStream.h>
 #include <grpc_async_stream/AsyncReadWriteStream.h>
@@ -21,27 +21,25 @@
 #include <ranges>
 #include <vector>
 
-namespace grpc_async_stream_test
+namespace grpc_async_stream
 {
 
-using namespace std::chrono_literals;
-
-// Anything that can be polled like grpc_async_stream::AsyncReadWriteStream
+// Anything that can be polled like AsyncReadWriteStream
 template<typename Stream>
 concept PollableStream = requires(Stream& stream) {
     { stream.isOpen() } -> std::convertible_to<bool>;
 };
 
-// A stream polled with the given response handler, like grpc_async_stream::AsyncReadWriteStream / AsyncReadStream
+// A stream polled with the given response handler, like AsyncReadWriteStream / AsyncReadStream
 template<typename Stream, typename Handler>
 concept PollableWithHandler = PollableStream<Stream> && requires(Stream& stream, Handler& handler) {
-    { stream.pollFor(handler, 1ms) } -> std::convertible_to<bool>;
+    { stream.pollFor(handler, std::chrono::milliseconds(1)) } -> std::convertible_to<bool>;
 };
 
-// A stream polled without a handler, like grpc_async_stream::AsyncWriteStream
+// A stream polled without a handler, like AsyncWriteStream
 template<typename Stream>
 concept PollableWithoutHandler = PollableStream<Stream> && requires(Stream& stream) {
-    { stream.pollFor(1ms) } -> std::convertible_to<bool>;
+    { stream.pollFor(std::chrono::milliseconds(1)) } -> std::convertible_to<bool>;
 };
 
 // Polls the stream until the predicate becomes true, the call ends, or the
@@ -56,7 +54,7 @@ bool pollUntil(Stream& stream, Handler&& handler, Predicate&& predicate,
     {
         if (std::chrono::steady_clock::now() > deadline)
             return predicate();
-        if (!stream.pollFor(handler, 1ms))
+        if (!stream.pollFor(handler, std::chrono::milliseconds(1)))
             return predicate();
     }
     return true;
@@ -72,12 +70,12 @@ bool pollUntilClosed(Stream& stream, Handler&& handler, std::chrono::millisecond
     {
         if (std::chrono::steady_clock::now() > deadline)
             return false;
-        stream.pollFor(handler, 1ms);
+        stream.pollFor(handler, std::chrono::milliseconds(1));
     }
     return true;
 }
 
-// pollUntil() for streams without responses (grpc_async_stream::AsyncWriteStream)
+// pollUntil() for streams without responses (AsyncWriteStream)
 template<PollableWithoutHandler Stream, std::predicate Predicate>
 bool pollUntil(Stream& stream, Predicate&& predicate, std::chrono::milliseconds timeout = std::chrono::seconds(10))
 {
@@ -86,13 +84,13 @@ bool pollUntil(Stream& stream, Predicate&& predicate, std::chrono::milliseconds 
     {
         if (std::chrono::steady_clock::now() > deadline)
             return predicate();
-        if (!stream.pollFor(1ms))
+        if (!stream.pollFor(std::chrono::milliseconds(1)))
             return predicate();
     }
     return true;
 }
 
-// pollUntilClosed() for streams without responses (grpc_async_stream::AsyncWriteStream)
+// pollUntilClosed() for streams without responses (AsyncWriteStream)
 template<PollableWithoutHandler Stream>
 bool pollUntilClosed(Stream& stream, std::chrono::milliseconds timeout = std::chrono::seconds(10))
 {
@@ -101,7 +99,7 @@ bool pollUntilClosed(Stream& stream, std::chrono::milliseconds timeout = std::ch
     {
         if (std::chrono::steady_clock::now() > deadline)
             return false;
-        stream.pollFor(1ms);
+        stream.pollFor(std::chrono::milliseconds(1));
     }
     return true;
 }
@@ -135,4 +133,4 @@ bool idsStrictlyIncrease(const Messages& messages)
            std::ranges::end(messages);
 }
 
-} // namespace grpc_async_stream_test
+} // namespace grpc_async_stream

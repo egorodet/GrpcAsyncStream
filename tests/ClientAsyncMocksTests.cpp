@@ -12,10 +12,10 @@
 
 #include <grpc_async_stream_test/Catch2StringMakers.h>
 #include <grpc_async_stream_test/ClientAsyncMocks.h>
-#include <grpc_async_stream_test/StreamTestUtils.h>
 #include <grpc_async_stream/AsyncReadStream.h>
 #include <grpc_async_stream/AsyncReadWriteStream.h>
 #include <grpc_async_stream/AsyncWriteStream.h>
+#include <grpc_async_stream/StreamUtils.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -35,6 +35,8 @@ namespace
 
 using namespace TestSupport;
 using namespace grpc_async_stream_test;
+using grpc_async_stream::pollUntil;
+using grpc_async_stream::pollUntilClosed;
 using grpc_async_stream::StreamState;
 
 using BidiMock   = ClientAsyncReaderWriterMock<Request, Response>;
@@ -223,7 +225,7 @@ TEST_CASE("Client async mocks record operations in their own FakeCall", "[mocks]
         CHECK(mock.readInitialMetadataCalls() == 1);
         CHECK(mock.queuedResponses() == 0);
     }
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
     cq.Shutdown();
 }
 
@@ -241,7 +243,7 @@ TEST_CASE("Mocks expose the written requests and pop them one by one", "[mocks]"
         mock.Write(makeRequest(1), &tag);
         mock.call().completeWrite();
         mock.Write(makeRequest(2), grpc::WriteOptions(), &tag);
-        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
+        CHECK(grpc_async_stream::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
         CHECK(&mock.writtenRequests() == &mock.call().writes());
 
         Request request;
@@ -261,7 +263,7 @@ TEST_CASE("Mocks expose the written requests and pop them one by one", "[mocks]"
         mock.Write(makeRequest(3), &tag);
         mock.call().completeWrite();
         mock.Write(makeRequest(4), grpc::WriteOptions(), &tag);
-        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
+        CHECK(grpc_async_stream::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
         CHECK(&mock.writtenRequests() == &mock.call().writes());
 
         Request request;
@@ -304,7 +306,7 @@ TEST_CASE("Derived bidirectional mock echoes the requests through enqueueRespons
     mock->pushResponse(11);
     REQUIRE(pollUntil(stream, handler, [&] { return received.size() == 5; }, poll_timeout));
     CHECK(mock->queuedResponses() == 0);
-    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{1, 2, 3, 10, 11});
+    CHECK(grpc_async_stream::idsOf(received) == std::vector<std::uint64_t>{1, 2, 3, 10, 11});
 
     REQUIRE(stream.writesDone());
     REQUIRE(pollUntil(stream, handler, [&] { return call->writesDonePending(); }, poll_timeout));
@@ -316,7 +318,7 @@ TEST_CASE("Derived bidirectional mock echoes the requests through enqueueRespons
     REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
 
     CHECK(stream.status().ok());
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
     CHECK(call->violations().empty());
 }
 
@@ -345,7 +347,7 @@ TEST_CASE("Client-streaming mock completed by the test", "[mocks]")
     REQUIRE(pollUntilClosed(stream, poll_timeout));
 
     CHECK(stream.status().ok());
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
     CHECK(call->violations().empty());
 }
 
@@ -383,7 +385,7 @@ TEST_CASE("Derived server-streaming mock scripts the responses", "[mocks]")
     REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
 
     CHECK(stream.status().ok());
-    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{100, 101, 102});
+    CHECK(grpc_async_stream::idsOf(received) == std::vector<std::uint64_t>{100, 101, 102});
     CHECK(call->violations().empty());
 }
 
@@ -443,7 +445,7 @@ TEST_CASE("Auto-completing mocks complete every operation they record", "[mocks]
         CHECK_FALSE(mock.call().finishPending());
 
         CHECK(status.ok());
-        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
+        CHECK(grpc_async_stream::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{1, 2});
         CHECK(mock.call().violations().empty());
         CHECK(drainCompletions(cq, tag_names) == expected_completions);
     }
@@ -458,7 +460,7 @@ TEST_CASE("Auto-completing mocks complete every operation they record", "[mocks]
         mock.Finish(&status, &finish_tag);
 
         CHECK(status.ok());
-        CHECK(grpc_async_stream_test::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
+        CHECK(grpc_async_stream::idsOf(mock.writtenRequests()) == std::vector<std::uint64_t>{3, 4});
         CHECK(mock.call().violations().empty());
         CHECK(drainCompletions(cq, tag_names) == expected_completions);
     }
@@ -522,8 +524,8 @@ TEST_CASE("Auto-completing bidirectional mock needs the test only to deliver and
     REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
 
     CHECK(stream.status().ok());
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
-    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{10, 11});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
+    CHECK(grpc_async_stream::idsOf(received) == std::vector<std::uint64_t>{10, 11});
     CHECK(call->violations().empty());
 }
 
@@ -542,7 +544,7 @@ TEST_CASE("Auto-completing client-streaming mock runs the whole call on its own"
 
     CHECK(stream.status().ok());
     CHECK(stream.writeQueueStats().written_messages == 3);
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2, 3});
     CHECK(call->writesDoneCalled());
     CHECK(call->violations().empty());
 }
@@ -568,6 +570,6 @@ TEST_CASE("Auto-completing server-streaming mock finishes the call once the test
     REQUIRE(pollUntilClosed(stream, handler, poll_timeout));
 
     CHECK(stream.status().ok());
-    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{100, 101});
+    CHECK(grpc_async_stream::idsOf(received) == std::vector<std::uint64_t>{100, 101});
     CHECK(call->violations().empty());
 }

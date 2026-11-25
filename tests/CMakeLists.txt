@@ -35,9 +35,10 @@ endif()
 set(_header_check_sources)
 foreach(header IN ITEMS include/grpc_async_stream/AsyncCallBase.h include/grpc_async_stream/AsyncWriteStream.h
                         include/grpc_async_stream/AsyncReadStream.h include/grpc_async_stream/AsyncReadWriteStream.h
-                        ${GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS})
+                        include/grpc_async_stream/StreamUtils.h ${GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS})
     string(MAKE_C_IDENTIFIER "${header}" header_id)
-    file(RELATIVE_PATH include_path "${PROJECT_SOURCE_DIR}/include" "${PROJECT_SOURCE_DIR}/${header}")
+    # Path relative to the include directory: include/ for the library, tests/include/ for the test utilities
+    string(REGEX REPLACE "^(tests/)?include/" "" include_path "${header}")
     set(check_source "${CMAKE_CURRENT_BINARY_DIR}/header_checks/${header_id}.cpp")
     file(CONFIGURE OUTPUT "${check_source}" CONTENT "#include <${include_path}>\n#include <${include_path}> // include guard\n")
     list(APPEND _header_check_sources "${check_source}")

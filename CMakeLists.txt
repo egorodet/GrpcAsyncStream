@@ -91,13 +91,14 @@ target_sources(GrpcAsyncStream INTERFACE
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncWriteStream.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/RingQueue.h>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadStream.h>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadWriteStream.h>)
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/AsyncReadWriteStream.h>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/grpc_async_stream/StreamUtils.h>)
 
 # ---------------------------------------------------------------------------
-# Header-only test utilities: <grpc_async_stream_test/...>, for tests of code built on
-# the library (this project's and other projects' tests alike)
+# Header-only test utilities: <grpc_async_stream_test/...> from tests/include, for tests
+# of code built on the library (this project's and other projects' tests alike). Kept in
+# an include directory of their own, apart from the library's include directory.
 #
-#   StreamTestUtils.h     polling helpers and message-sequence checks   (gRPC)
 #   FakeReaderWriter.h    deterministic fake of the async bidi stream   (gRPC)
 #   ClientAsyncMocks.h    extensible mocks of the async client streams  (gRPC)
 #   InProcessServer.h     gRPC server reachable through in-process channels (gRPC)
@@ -107,12 +108,11 @@ target_sources(GrpcAsyncStream INTERFACE
 # ---------------------------------------------------------------------------
 
 set(GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS
-    include/grpc_async_stream_test/Catch2StringMakers.h
-    include/grpc_async_stream_test/ClientAsyncMocks.h
-    include/grpc_async_stream_test/EnumReflection.h
-    include/grpc_async_stream_test/FakeReaderWriter.h
-    include/grpc_async_stream_test/InProcessServer.h
-    include/grpc_async_stream_test/StreamTestUtils.h)
+    tests/include/grpc_async_stream_test/Catch2StringMakers.h
+    tests/include/grpc_async_stream_test/ClientAsyncMocks.h
+    tests/include/grpc_async_stream_test/EnumReflection.h
+    tests/include/grpc_async_stream_test/FakeReaderWriter.h
+    tests/include/grpc_async_stream_test/InProcessServer.h)
 
 if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
     grpc_async_stream_add_magic_enum()
@@ -122,7 +122,7 @@ if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
     set_target_properties(GrpcAsyncStreamTestUtils PROPERTIES EXPORT_NAME TestUtils)
 
     target_include_directories(GrpcAsyncStreamTestUtils INTERFACE
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/tests/include>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
     target_link_libraries(GrpcAsyncStreamTestUtils INTERFACE
         GrpcAsyncStream::GrpcAsyncStream
@@ -184,7 +184,7 @@ if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
     install(DIRECTORY include/grpc_async_stream DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
         install(TARGETS GrpcAsyncStreamTestUtils EXPORT GrpcAsyncStreamTargets)
-        install(DIRECTORY include/grpc_async_stream_test DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+        install(DIRECTORY tests/include/grpc_async_stream_test DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     endif()
     install(EXPORT GrpcAsyncStreamTargets
         NAMESPACE GrpcAsyncStream::

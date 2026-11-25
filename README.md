@@ -97,10 +97,11 @@ while (prices.poll([&](PriceUpdate&& update) { apply(update); })) { // never blo
   [`AsyncReadStream.h`](include/grpc_async_stream/AsyncReadStream.h) (server-streaming RPCs) and
   [`AsyncReadWriteStream.h`](include/grpc_async_stream/AsyncReadWriteStream.h) (bidirectional-streaming RPCs), with
   [`AsyncCallBase.h`](include/grpc_async_stream/AsyncCallBase.h) holding what they share; works with any protobuf
-  request/response pair.
-- **Reusable test utilities** ([`include/grpc_async_stream_test`](include/grpc_async_stream_test), CMake target
-  `GrpcAsyncStream::TestUtils`): a deterministic fake of the gRPC stream, an in-process gRPC server,
-  polling helpers and readable test output, for the tests of products built on the library.
+  request/response pair. [`StreamUtils.h`](include/grpc_async_stream/StreamUtils.h) adds polling helpers with
+  timeouts and message-sequence checks, for production code and tests alike.
+- **Reusable test utilities** ([`tests/include/grpc_async_stream_test`](tests/include/grpc_async_stream_test), CMake
+  target `GrpcAsyncStream::TestUtils`): a deterministic fake of the gRPC stream, extensible stream mocks, an in-process
+  gRPC server and readable test output, for the tests of products built on the library.
 - **Modern C++20**: concepts constrain the message types, the stream factory and the response handler
   (clear compile errors instead of template noise), limits are configured with designated
   initializers, and defaulted `operator==` makes settings and statistics easy to compare.
@@ -497,6 +498,18 @@ const auto policy = magic_enum::enum_cast<grpc_async_stream::WriteOverflowPolicy
 std::array<std::uint64_t, magic_enum::enum_count<grpc_async_stream::SendResult>()> outcomes{};
 ++outcomes[*magic_enum::enum_index(stream.sendRequest(request))];
 ```
+
+### Stream utilities
+
+Header `<grpc_async_stream/StreamUtils.h>`: helpers built on `pollFor()` and `isOpen()`, for production code and
+tests alike (gRPC only).
+
+| Helper | Description |
+|---|---|
+| `bool pollUntil(stream, handler, predicate, timeout = 10s)` / `bool pollUntil(stream, predicate, timeout = 10s)` | Polls the stream (with a response handler for `AsyncReadWriteStream` and `AsyncReadStream`, without for `AsyncWriteStream`) until `predicate()` holds, the call ends or the timeout expires. Returns the final value of the predicate. |
+| `bool pollUntilClosed(stream, handler, timeout = 10s)` / `bool pollUntilClosed(stream, timeout = 10s)` | Polls the stream until the call ends or the timeout expires. Returns `true` if the call ended. |
+| `std::vector<std::uint64_t> idsOf(messages)` | The `id()` of each message of a range, in order. |
+| `bool idsStrictlyIncrease(messages)` | True when the `id()` of the messages of a range strictly increase. |
 
 ### `SendResult`
 
@@ -918,14 +931,16 @@ What the numbers show:
 
 The utilities this project's tests are built on are published for the tests of products that use the
 library, as the header-only CMake target **`GrpcAsyncStream::TestUtils`** with headers under
-`<grpc_async_stream_test/…>` (namespace `grpc_async_stream_test`):
+`<grpc_async_stream_test/…>` (namespace `grpc_async_stream_test`). They live in their own include directory,
+`tests/include`, separate from the library's `include`, so the `GrpcAsyncStream::GrpcAsyncStream` target never
+exposes them. The polling helpers they are used with (`pollUntil()`, `pollUntilClosed()`, `idsOf()`, …) are part of
+the library: see [Stream utilities](#stream-utilities).
 
 | Header | Contents | Needs |
 |---|---|---|
 | `FakeReaderWriter.h` | `FakeCall<W, R>` with `makeFakeStreamFactory()` (a fake `ClientAsyncReaderWriterInterface`) `makeFakeWriterFactory(call, &response)` (a fake `ClientAsyncWriterInterface` for client-streaming calls; `completeFinish(status, response)` fills the response) and `makeFakeReaderFactory(call, request)` (a fake `ClientAsyncReaderInterface` for server-streaming calls; `initialRequest()` returns the request): start-call, reads, writes, half-close and finish complete only when the test says so, with any outcome. Records the written messages and every misuse of the gRPC async API (`violations()`). | gRPC |
 | `ClientAsyncMocks.h` | Extensible mocks `ClientAsyncReaderWriterMock<W, R>`, `ClientAsyncWriterMock<W>` and `ClientAsyncReaderMock<R>` of the three gRPC client stream interfaces. Each mock is constructed from the call's completion queue only and creates the `FakeCall` it records its operations with (`call()`, `sharedCall()`); the writing mocks also expose the written requests with `writtenRequests()` and read them one by one with `popWrittenRequest(request)`. Unlike the final fakes, every operation is virtual: a derived mock overrides what it needs (complete or fail the start-call, complete writes, end the reads) and calls the base implementation to keep the recording and contract checks. The reading mocks queue responses with the protected `enqueueResponse()`, delivered one per `Read`, for the response pushing methods of derived mocks. Constructed with `auto_complete == true` (the optional second constructor argument), a mock completes every operation right after recording it: the start-call, writes and half-close succeed and `Finish` returns `grpc::Status::OK`, leaving the test only to deliver the responses and end the reads. `makeMockStreamFactory<Mock>(on_created)` creates the stream factory for `open()`: it constructs the mock, calls `StartCall(tag)` like an `Async*` stub method, and passes the mock to `on_created`; `makeMockStreamFactory<Mock>(auto_complete, on_created)` constructs the mocks with auto-completion. | gRPC |
 | `InProcessServer.h` | `InProcessServer`: runs any gRPC services (sync, async, callback, generic) in the test process, reachable through in-process channels: no ports, no conflicts between parallel test runs. `makeStub<Service>()`, extra channels with their own arguments, configure hook, idempotent `shutdown()`. Also `unreachable_server_address` for connection-failure tests. | gRPC |
-| `StreamTestUtils.h` | `pollUntil()` / `pollUntilClosed()` with timeouts, with a response handler (`AsyncReadWriteStream`, `AsyncReadStream`) or without (`AsyncWriteStream`); `idsOf()` / `idsStrictlyIncrease()` for message sequences. | gRPC |
 | `EnumReflection.h` | `enumName()`, `enumIndex()` for `SendResult`, `WriteOverflowPolicy` and `StreamState`; `statusCodeName()` for `grpc::StatusCode`. | magic_enum |
 | `Catch2StringMakers.h` | Catch2 shows these enums and `grpc::StatusCode` by name in assertion messages. | Catch2 v3 (link it to your test target) |
 
@@ -943,7 +958,7 @@ target_link_libraries(product_tests PRIVATE GrpcAsyncStream::TestUtils Catch2::C
 ```cpp
 #include <grpc_async_stream_test/Catch2StringMakers.h>
 #include <grpc_async_stream_test/FakeReaderWriter.h>
-#include <grpc_async_stream_test/StreamTestUtils.h>
+#include <grpc_async_stream/StreamUtils.h>
 
 TEST_CASE("Telemetry client keeps the newest samples when the server stalls")
 {
@@ -953,7 +968,7 @@ TEST_CASE("Telemetry client keeps the newest samples when the server stalls")
     client.publish(makeSamples(5000));     // start-call not completed yet: everything is queued
     call->completeStart();
     // ... complete writes one by one with call->completeWrite(), deliver acks with call->deliver(...)
-    REQUIRE(grpc_async_stream_test::pollUntil(client.stream(), client.handler(), [&] { return call->writePending(); }));
+    REQUIRE(grpc_async_stream::pollUntil(client.stream(), client.handler(), [&] { return call->writePending(); }));
     CHECK(call->violations().empty());
 }
 ```
@@ -1019,19 +1034,20 @@ GrpcAsyncStream/
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
 │   └── GrpcAsyncStreamConfig.cmake.in
 ├── include/
-│   ├── grpc_async_stream/            # the library: GrpcAsyncStream::GrpcAsyncStream (gRPC only)
-│   │   ├── AsyncCallBase.h           #   call core shared by all streams
-│   │   ├── AsyncWriteStream.h        #   client-streaming calls (write side)
-│   │   ├── AsyncReadStream.h         #   server-streaming calls (read side)
-│   │   └── AsyncReadWriteStream.h    #   bidirectional streams: read side over write side
-│   └── grpc_async_stream_test/       # reusable test utilities: GrpcAsyncStream::TestUtils
-│       ├── FakeReaderWriter.h        #   deterministic fakes of the async bidi, writer and reader streams
-│       ├── ClientAsyncMocks.h        #   extensible (derivable) mocks of the same three stream interfaces
-│       ├── InProcessServer.h         #   gRPC server reachable through in-process channels
-│       ├── StreamTestUtils.h         #   polling helpers, message-sequence checks
-│       ├── EnumReflection.h          #   enum names / indexes (magic_enum)
-│       └── Catch2StringMakers.h      #   readable Catch2 output
+│   └── grpc_async_stream/            # the library: GrpcAsyncStream::GrpcAsyncStream (gRPC only)
+│       ├── AsyncCallBase.h           #   call core shared by all streams
+│       ├── AsyncWriteStream.h        #   client-streaming calls (write side)
+│       ├── AsyncReadStream.h         #   server-streaming calls (read side)
+│       ├── AsyncReadWriteStream.h    #   bidirectional streams: read side over write side
+│       └── StreamUtils.h             #   polling helpers, message-sequence checks
 ├── tests/
+│   ├── include/
+│   │   └── grpc_async_stream_test/   # reusable test utilities: GrpcAsyncStream::TestUtils
+│   │       ├── FakeReaderWriter.h    #   deterministic fakes of the async bidi, writer and reader streams
+│   │       ├── ClientAsyncMocks.h    #   extensible (derivable) mocks of the same three stream interfaces
+│   │       ├── InProcessServer.h     #   gRPC server reachable through in-process channels
+│   │       ├── EnumReflection.h      #   enum names / indexes (magic_enum)
+│   │       └── Catch2StringMakers.h  #   readable Catch2 output
 │   ├── proto/test_stream.proto       # this repository's test protocol
 │   ├── support/TestServer.{h,cpp}    # its TestStream service, served by an InProcessServer
 │   ├── StreamLifecycleTests.cpp

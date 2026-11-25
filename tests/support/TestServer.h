@@ -6,7 +6,7 @@
 
 // The TestStream service of this repository's own tests and benchmarks
 // (tests/proto/test_stream.proto), served by a grpc_async_stream_test::InProcessServer.
-// Specific to this repository; the reusable parts live in include/grpc_async_stream_test.
+// Specific to this repository; the reusable parts live in tests/include/grpc_async_stream_test.
 
 #include "test_stream.grpc.pb.h"
 
