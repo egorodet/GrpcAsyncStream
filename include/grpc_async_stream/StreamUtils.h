@@ -11,6 +11,7 @@
 #include <chrono>
 #include <concepts>
 #include <cstdint>
+#include <functional>
 #include <iterator>
 #include <ranges>
 #include <vector>
