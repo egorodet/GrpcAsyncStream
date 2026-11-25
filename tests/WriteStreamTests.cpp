@@ -36,6 +36,8 @@ using namespace TestSupport;
 using namespace grpc_async_stream_test;
 using grpc_async_stream::idsOf;
 using grpc_async_stream::pollUntil;
+using grpc_async_stream::PollableWithHandler;
+using grpc_async_stream::PollableWithoutHandler;
 using grpc_async_stream::pollUntilClosed;
 using namespace Catch::Generators;
 using grpc_async_stream::SendResult;
