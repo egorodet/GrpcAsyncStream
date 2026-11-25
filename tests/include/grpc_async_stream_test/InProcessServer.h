@@ -4,15 +4,10 @@
 
 #pragma once
 
-// A gRPC server running inside the test process, reachable through in-process
-// channels: no network ports, no port conflicts between parallel test runs.
-// Works with any synchronous, callback or async gRPC service implementation.
-//
-//   MyServiceImpl service;
+// gRPC server in the test process, reachable through in-process channels (no ports):
 //   grpc_async_stream_test::InProcessServer server(service);   // or server({&service_a, &service_b})
 //   auto stub = server.makeStub<my::proto::MyService>();
-//
-// Test-framework independent; requires only gRPC.
+// Works with any service flavour; test-framework independent, requires only gRPC.
 
 #include <grpcpp/grpcpp.h>
 
@@ -29,8 +24,7 @@ namespace grpc_async_stream_test
 class InProcessServer
 {
 public:
-    // Optional hook to adjust the server before it starts (resource quota,
-    // completion queues of async services, options, ...)
+    // Optional hook adjusting the server before it starts (quota, async completion queues, ...)
     using Configure = std::function<void(grpc::ServerBuilder&)>;
 
     // Registers the service (which must outlive the server) and starts it
@@ -75,8 +69,7 @@ public:
         return m_server->InProcessChannel(args);
     }
 
-    // Fresh stub of the given generated service class over the default channel,
-    // e.g. makeStub<my::proto::MyService>()
+    // Fresh stub of a generated service over the default channel
     template<typename GeneratedService>
     [[nodiscard]] std::unique_ptr<typename GeneratedService::Stub> makeStub() const
     {
@@ -85,8 +78,7 @@ public:
 
     [[nodiscard]] grpc::Server& server() { return *m_server; }
 
-    // Stops accepting calls, gives active calls the grace period to end, then
-    // cancels them and waits until all handlers have returned. Idempotent.
+    // Stops the server, cancelling calls still active after the grace period. Idempotent.
     void shutdown()
     {
         if (!m_server)
@@ -102,8 +94,7 @@ private:
     std::shared_ptr<grpc::Channel> m_channel;
 };
 
-// A server address that refuses connections on every platform, for testing
-// connection failures (UNAVAILABLE)
+// Address refusing connections on every platform, for UNAVAILABLE tests
 #if defined(_WIN32)
 inline constexpr std::string_view unreachable_server_address = "ipv4:127.0.0.1:1";
 #else

@@ -4,9 +4,8 @@
 
 #pragma once
 
-// Enum reflection for the grpc_async_stream enumerations, built on magic_enum
-// (https://github.com/Neargye/magic_enum): names, parsing, counts and indexes,
-// e.g. for readable test output or per-result histograms. Test-framework independent.
+// Names and indexes of the grpc_async_stream enumerations, built on magic_enum.
+// Test-framework independent.
 
 #include <grpc_async_stream/AsyncCallBase.h>
 #include <grpc_async_stream/AsyncWriteStream.h>
@@ -23,7 +22,7 @@
 namespace grpc_async_stream_test
 {
 
-// The public enumerations of grpc_async_stream
+// Public enumerations of grpc_async_stream
 template<typename Enum>
 concept LibraryEnum = std::same_as<Enum, grpc_async_stream::SendResult> ||
                       std::same_as<Enum, grpc_async_stream::WriteOverflowPolicy> ||
@@ -55,7 +54,7 @@ inline std::string statusCodeName(grpc::StatusCode code)
            std::to_string(magic_enum::enum_integer(code)) + ")";
 }
 
-// magic_enum reflects only values within MAGIC_ENUM_RANGE_MIN..MAX: make sure it sees every enumerator
+// magic_enum reflects only MAGIC_ENUM_RANGE_MIN..MAX: check it sees every enumerator
 static_assert(magic_enum::enum_count<grpc_async_stream::SendResult>() == 5);
 static_assert(magic_enum::enum_count<grpc_async_stream::WriteOverflowPolicy>() == 2);
 static_assert(magic_enum::enum_count<grpc_async_stream::StreamState>() == 5);

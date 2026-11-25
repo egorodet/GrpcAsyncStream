@@ -4,9 +4,8 @@
 
 #pragma once
 
-// The TestStream service of this repository's own tests and benchmarks
-// (tests/proto/test_stream.proto), served by a grpc_async_stream_test::InProcessServer.
-// Specific to this repository; the reusable parts live in tests/include/grpc_async_stream_test.
+// TestStream service (tests/proto/test_stream.proto) of this repository's tests and benchmarks,
+// served by an InProcessServer. Reusable utilities live in tests/include/grpc_async_stream_test.
 
 #include "test_stream.grpc.pb.h"
 
@@ -39,8 +38,7 @@ public:
     grpc::Status Subscribe(grpc::ServerContext* context, const Request* request,
                            grpc::ServerWriter<Response>* writer) override;
 
-    // Delay applied before reading every request: simulates a slow consumer,
-    // which makes gRPC flow control push back on the client writes.
+    // Delay before reading each request: a slow consumer, so flow control pushes back
     void setReadDelay(std::chrono::microseconds delay) { m_read_delay_us = delay.count(); }
 
     // Number of requests received / responses sent over all calls

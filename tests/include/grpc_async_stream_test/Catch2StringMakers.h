@@ -4,10 +4,8 @@
 
 #pragma once
 
-// Catch2 string makers: grpc_async_stream enumerations and grpc::StatusCode are shown
-// by name in Catch2 assertion messages ("Dropped", "DEADLINE_EXCEEDED (4)")
-// instead of bare numbers. Include in Catch2 test sources; requires Catch2 v3
-// and magic_enum (via EnumReflection.h).
+// Catch2 shows the library enums and grpc::StatusCode by name ("Dropped", "DEADLINE_EXCEEDED (4)").
+// Requires Catch2 v3 and magic_enum.
 
 #include <grpc_async_stream_test/EnumReflection.h>
 
