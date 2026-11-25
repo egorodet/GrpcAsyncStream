@@ -11,8 +11,8 @@
 #include <grpc_async_stream_test/EnumReflection.h>
 #include <grpc_async_stream_test/FakeReaderWriter.h>
 #include <grpc_async_stream_test/InProcessServer.h>
-#include <grpc_async_stream_test/StreamTestUtils.h>
 #include <grpc_async_stream/AsyncReadWriteStream.h>
+#include <grpc_async_stream/StreamUtils.h>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -121,27 +121,27 @@ TEST_CASE("Test utilities drive a product stream through a fake call", "[test-ut
     call->completeStart();
     for (std::size_t written = 1; written <= 2; ++written)
     {
-        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler, [&] { return call->writePending(); }));
+        REQUIRE(grpc_async_stream::pollUntil(stream, handler, [&] { return call->writePending(); }));
         call->completeWrite();
-        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler,
-                                                  [&] { return stream.writeQueueStats().written_messages == written; }));
+        REQUIRE(grpc_async_stream::pollUntil(stream, handler,
+                                             [&] { return stream.writeQueueStats().written_messages == written; }));
     }
-    CHECK(grpc_async_stream_test::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
+    CHECK(grpc_async_stream::idsOf(call->writes()) == std::vector<std::uint64_t>{1, 2});
 
     // Server messages arrive one read at a time
     for (const std::uint64_t value : {10U, 11U})
     {
         call->deliver({.value = value});
-        REQUIRE(grpc_async_stream_test::pollUntil(stream, handler,
-                                                  [&] { return !received.empty() && received.back().value == value; }));
+        REQUIRE(grpc_async_stream::pollUntil(stream, handler,
+                                             [&] { return !received.empty() && received.back().value == value; }));
     }
-    CHECK(grpc_async_stream_test::idsOf(received) == std::vector<std::uint64_t>{10, 11});
-    CHECK(grpc_async_stream_test::idsStrictlyIncrease(received));
+    CHECK(grpc_async_stream::idsOf(received) == std::vector<std::uint64_t>{10, 11});
+    CHECK(grpc_async_stream::idsStrictlyIncrease(received));
 
     call->endReads();
-    REQUIRE(grpc_async_stream_test::pollUntil(stream, handler, [&] { return call->finishPending(); }));
+    REQUIRE(grpc_async_stream::pollUntil(stream, handler, [&] { return call->finishPending(); }));
     call->completeFinish(grpc::Status(grpc::StatusCode::ABORTED, "done"));
-    REQUIRE(grpc_async_stream_test::pollUntilClosed(stream, handler));
+    REQUIRE(grpc_async_stream::pollUntilClosed(stream, handler));
     CHECK(stream.status().error_code() == grpc::StatusCode::ABORTED);
     CHECK(call->violations().empty()); // the stream used the gRPC async API correctly
     CHECK(grpc_async_stream_test::statusCodeName(grpc::StatusCode::ABORTED) == "ABORTED (10)");

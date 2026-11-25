@@ -10,8 +10,8 @@
 #include <grpc_async_stream_test/Catch2StringMakers.h>
 #include <grpc_async_stream_test/EnumReflection.h>
 #include <grpc_async_stream_test/FakeReaderWriter.h>
-#include <grpc_async_stream_test/StreamTestUtils.h>
 #include <grpc_async_stream/AsyncReadWriteStream.h>
+#include <grpc_async_stream/StreamUtils.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -29,6 +29,8 @@ namespace
 
 using namespace TestSupport;
 using namespace grpc_async_stream_test;
+using grpc_async_stream::idsOf;
+using grpc_async_stream::pollUntil;
 using namespace Catch::Generators;
 using grpc_async_stream::SendResult;
 using grpc_async_stream::WriteOverflowPolicy;
