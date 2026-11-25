@@ -27,14 +27,10 @@ option(GRPC_ASYNC_STREAM_INSTALL          "Generate install and package-config r
 # when it is the top-level project, and they use insecure (in-process) channels only
 option(GRPC_ASYNC_STREAM_GRPC_UNSECURE    "When gRPC is built from source, use grpc++_unsecure (no TLS, xDS, RE2) and skip BoringSSL/OpenSSL"
        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
-option(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS "Provide the GrpcAsyncStream::TestUtils target (grpc_async_stream_test headers) for tests of other projects"
-       ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
-
-# This project's own tests and benchmarks are built on the test utilities
-if((GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS) AND NOT GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
-    message(STATUS "GrpcAsyncStream: enabling GRPC_ASYNC_STREAM_BUILD_TEST_UTILS, required by the tests and benchmarks")
-    set(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS ON)
-endif()
+# The GrpcAsyncStream::TestUtils target is always defined (for the tests of parent projects,
+# which do not build this project's tests); this option only controls its installation
+option(GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS "Install the GrpcAsyncStream::TestUtils target and grpc_async_stream_test headers"
+       ${GRPC_ASYNC_STREAM_INSTALL})
 
 set(GRPC_ASYNC_STREAM_GRPC_PROVIDER "auto" CACHE STRING "Where to take gRPC from: auto, package or fetch")
 set_property(CACHE GRPC_ASYNC_STREAM_GRPC_PROVIDER PROPERTY STRINGS auto package fetch)
@@ -114,26 +110,24 @@ set(GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS
     tests/include/grpc_async_stream_test/FakeReaderWriter.h
     tests/include/grpc_async_stream_test/InProcessServer.h)
 
-if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
-    grpc_async_stream_add_magic_enum()
+grpc_async_stream_add_magic_enum()
 
-    add_library(GrpcAsyncStreamTestUtils INTERFACE)
-    add_library(GrpcAsyncStream::TestUtils ALIAS GrpcAsyncStreamTestUtils)
-    set_target_properties(GrpcAsyncStreamTestUtils PROPERTIES EXPORT_NAME TestUtils)
+add_library(GrpcAsyncStreamTestUtils INTERFACE)
+add_library(GrpcAsyncStream::TestUtils ALIAS GrpcAsyncStreamTestUtils)
+set_target_properties(GrpcAsyncStreamTestUtils PROPERTIES EXPORT_NAME TestUtils)
 
-    target_include_directories(GrpcAsyncStreamTestUtils INTERFACE
-        $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/tests/include>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
-    target_link_libraries(GrpcAsyncStreamTestUtils INTERFACE
-        GrpcAsyncStream::GrpcAsyncStream
-        magic_enum::magic_enum)
-    target_compile_features(GrpcAsyncStreamTestUtils INTERFACE cxx_std_20)
+target_include_directories(GrpcAsyncStreamTestUtils INTERFACE
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/tests/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
+target_link_libraries(GrpcAsyncStreamTestUtils INTERFACE
+    GrpcAsyncStream::GrpcAsyncStream
+    magic_enum::magic_enum)
+target_compile_features(GrpcAsyncStreamTestUtils INTERFACE cxx_std_20)
 
-    # Shows the headers in IDE project trees (one generator expression per header)
-    foreach(header IN LISTS GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS)
-        target_sources(GrpcAsyncStreamTestUtils INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/${header}>)
-    endforeach()
-endif()
+# Shows the headers in IDE project trees (one generator expression per header)
+foreach(header IN LISTS GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS)
+    target_sources(GrpcAsyncStreamTestUtils INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/${header}>)
+endforeach()
 
 # ---------------------------------------------------------------------------
 # Tests and benchmarks
@@ -182,7 +176,7 @@ if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
 
     install(TARGETS GrpcAsyncStream EXPORT GrpcAsyncStreamTargets)
     install(DIRECTORY include/grpc_async_stream DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-    if(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS)
+    if(GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS)
         install(TARGETS GrpcAsyncStreamTestUtils EXPORT GrpcAsyncStreamTargets)
         install(DIRECTORY tests/include/grpc_async_stream_test DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
     endif()
