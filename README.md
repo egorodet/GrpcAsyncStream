@@ -585,7 +585,7 @@ ctest --test-dir build/Release -LE benchmark --output-on-failure
   binaries are mostly C++17, so `--build=missing` builds gRPC once; the package cache keeps it.
 - The toolchain and presets set `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package`, so a missing package is an error.
 - The recipe generates no `CMakeUserPresets.json` (its names would clash); delete one left by an earlier run.
-- Options: `-o "&:with_tests=False"`, `-o "&:with_test_utils=False"`. When cross-building, `protoc` and
+- Options: `-o "&:with_tests=False"`. When cross-building, `protoc` and
   `grpc_cpp_plugin` are added as tool requirements.
 
 **In your own Conan project**, require `grpc` (and `magic_enum` for the test utilities) and add this project
@@ -599,7 +599,7 @@ as a subdirectory or with CPM: imported targets and found packages are used as t
 | `GRPC_ASYNC_STREAM_GRPC_UNSECURE` | `ON` (top level) | Link `grpc++_unsecure` when building gRPC from source; no effect on a package |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
 | `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version fetched when not found |
-| `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` | `ON` (top level) | Provide `GrpcAsyncStream::TestUtils`; on automatically with tests or benchmarks |
+| `GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS` | `GRPC_ASYNC_STREAM_INSTALL` | Install `GrpcAsyncStream::TestUtils` and its headers (the target itself is always defined) |
 | `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version fetched when not found |
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
@@ -786,8 +786,7 @@ polling helpers they are used with are part of the library ([Stream utilities](#
 The target links `GrpcAsyncStream::GrpcAsyncStream` and magic_enum; only `Catch2StringMakers.h` needs Catch2.
 
 ```cmake
-# Subproject / CPM: ask for the test utilities (on by default only when GrpcAsyncStream is the top-level project)
-set(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS ON)
+# Subproject / CPM: the test utilities target is always defined, even when this project's tests are not built
 CPMAddPackage(NAME GrpcAsyncStream GITHUB_REPOSITORY egorodet/GrpcAsyncStream GIT_TAG main)
 
 target_link_libraries(product_tests PRIVATE GrpcAsyncStream::TestUtils Catch2::Catch2WithMain)
@@ -836,7 +835,7 @@ target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 ```
 
 **Installed package** (requires an installed gRPC; installs the test utilities too when
-`GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` is on):
+`GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS` is on, as it is by default):
 
 ```bash
 cmake -S . -B build -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=package -DGRPC_ASYNC_STREAM_BUILD_TESTS=OFF \
