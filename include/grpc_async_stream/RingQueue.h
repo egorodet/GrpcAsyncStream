@@ -4,8 +4,8 @@
 
 #pragma once
 
-// Requires C++20 (concepts, std::construct_at).
-// Depends only on the C++ standard library.
+// FIFO queue on a growable ring buffer.
+// Requires C++20; depends only on the C++ standard library.
 
 #include <concepts>
 #include <cstddef>
@@ -19,19 +19,9 @@ namespace grpc_async_stream
 namespace detail
 {
 
-// FIFO queue on a ring buffer whose capacity is a power of two and grows by
-// doubling. Unlike std::deque it does not allocate per element (MSVC's deque
-// allocates one block per element larger than 8 bytes), so pushing and popping
-// in steady state allocate nothing.
-//
-// The storage is raw memory: an element is constructed in its slot when pushed
-// and destroyed when popped or dropped. Free slots therefore hold no objects
-// (and no memory of the messages popped from them), growing moves only the
-// live elements, and no empty elements are constructed. release() destroys the
-// elements and frees the storage.
-//
-// The arguments of emplaceBack() / pushBack() must not refer to an element of
-// the queue itself, since growing moves the elements.
+// FIFO queue on raw ring storage with power-of-two capacity, doubled on growth.
+// Unlike std::deque (MSVC allocates per element > 8 bytes), steady-state push/pop allocate nothing.
+// Free slots hold no objects. Arguments of emplaceBack() / pushBack() must not refer to queue elements.
 template<typename T>
     requires std::move_constructible<T> && std::is_nothrow_destructible_v<T>
 class RingQueue
@@ -49,12 +39,11 @@ public:
     [[nodiscard]] std::size_t size() const noexcept { return m_size; }
     [[nodiscard]] std::size_t capacity() const noexcept { return m_capacity; }
 
-    // The oldest and the newest element; the queue must not be empty
+    // Oldest and newest element; the queue must not be empty
     [[nodiscard]] T& front() noexcept { return m_slots[m_head]; }
     [[nodiscard]] T& back() noexcept { return m_slots[slot(m_size - 1)]; }
 
-    // Constructs a new newest element in place. If the construction throws,
-    // the queue keeps its elements (its capacity may have grown).
+    // Constructs a new element at the back; on exception the elements are kept.
     template<typename... Args>
         requires std::constructible_from<T, Args...>
     T& emplaceBack(Args&&... args)
@@ -68,7 +57,7 @@ public:
 
     void pushBack(T&& value) { emplaceBack(std::move(value)); }
 
-    // Remove the oldest / the newest element and return it
+    // Remove and return the oldest / newest element
     T popFront()
     {
         T value = std::move(front());
@@ -83,7 +72,7 @@ public:
         return value;
     }
 
-    // Destroy the oldest / the newest element in place, without moving it out
+    // Destroy the oldest / newest element in place
     void dropFront() noexcept
     {
         std::destroy_at(m_slots + m_head);
@@ -121,8 +110,7 @@ private:
 
     void grow()
     {
-        // Frees the new storage if moving (or copying) an element throws, in
-        // which case the queue keeps its elements in the old storage
+        // Frees the new storage if moving an element throws; the old storage stays intact
         struct NewStorage
         {
             T*          slots       = nullptr;
@@ -145,7 +133,7 @@ private:
                               std::move_if_noexcept(m_slots[slot(storage.constructed)]));
         T* const new_slots = std::exchange(storage.slots, nullptr);
 
-        // The old slots hold moved-from elements, destroyed before freeing them
+        // Destroy the moved-from elements and free the old storage
         const std::size_t count = m_size;
         release();
         m_slots    = new_slots;

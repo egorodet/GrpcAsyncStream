@@ -4,14 +4,8 @@
 
 #pragma once
 
-// Helpers for code built on AsyncReadWriteStream, AsyncWriteStream and
-// AsyncReadStream, in production code and tests alike: polling a stream until
-// a condition holds or the call ends, and inspecting sequences of messages.
-// Requires only gRPC.
-
-#include <grpc_async_stream/AsyncReadStream.h>
-#include <grpc_async_stream/AsyncReadWriteStream.h>
-#include <grpc_async_stream/AsyncWriteStream.h>
+// Helpers for polling streams until a condition holds and for checking message sequences.
+// Requires C++20; depends only on the C++ standard library.
 
 #include <algorithm>
 #include <chrono>
@@ -30,20 +24,19 @@ concept PollableStream = requires(Stream& stream) {
     { stream.isOpen() } -> std::convertible_to<bool>;
 };
 
-// A stream polled with the given response handler, like AsyncReadWriteStream / AsyncReadStream
+// Stream polled with a response handler, like AsyncReadWriteStream / AsyncReadStream
 template<typename Stream, typename Handler>
 concept PollableWithHandler = PollableStream<Stream> && requires(Stream& stream, Handler& handler) {
     { stream.pollFor(handler, std::chrono::milliseconds(1)) } -> std::convertible_to<bool>;
 };
 
-// A stream polled without a handler, like AsyncWriteStream
+// Stream polled without a handler, like AsyncWriteStream
 template<typename Stream>
 concept PollableWithoutHandler = PollableStream<Stream> && requires(Stream& stream) {
     { stream.pollFor(std::chrono::milliseconds(1)) } -> std::convertible_to<bool>;
 };
 
-// Polls the stream until the predicate becomes true, the call ends, or the
-// timeout expires. Returns the final value of the predicate.
+// Polls until the predicate holds, the call ends or the timeout expires; returns the predicate.
 template<PollableStream Stream, typename Handler, std::predicate Predicate>
     requires PollableWithHandler<Stream, Handler>
 bool pollUntil(Stream& stream, Handler&& handler, Predicate&& predicate,
@@ -60,7 +53,7 @@ bool pollUntil(Stream& stream, Handler&& handler, Predicate&& predicate,
     return true;
 }
 
-// Polls the stream until the call ends or the timeout expires. Returns true if the call ended.
+// Polls until the call ends or the timeout expires; returns true if the call ended.
 template<PollableStream Stream, typename Handler>
     requires PollableWithHandler<Stream, Handler>
 bool pollUntilClosed(Stream& stream, Handler&& handler, std::chrono::milliseconds timeout = std::chrono::seconds(10))
@@ -104,13 +97,13 @@ bool pollUntilClosed(Stream& stream, std::chrono::milliseconds timeout = std::ch
     return true;
 }
 
-// Messages with an integral id() accessor, as used by idsOf() / idsStrictlyIncrease()
+// Message with an integral id() accessor
 template<typename Message>
 concept MessageWithId = requires(const Message& message) {
     { message.id() } -> std::convertible_to<std::uint64_t>;
 };
 
-// The ids of a range of messages, in order
+// Ids of a range of messages, in order
 template<std::ranges::input_range Messages>
     requires MessageWithId<std::ranges::range_value_t<Messages>>
 std::vector<std::uint64_t> idsOf(const Messages& messages)
@@ -123,7 +116,7 @@ std::vector<std::uint64_t> idsOf(const Messages& messages)
     return ids;
 }
 
-// True when the ids of the messages strictly increase
+// True when the message ids strictly increase
 template<std::ranges::forward_range Messages>
     requires MessageWithId<std::ranges::range_value_t<Messages>>
 bool idsStrictlyIncrease(const Messages& messages)

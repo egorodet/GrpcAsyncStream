@@ -4,40 +4,26 @@
 
 #pragma once
 
-// Requires C++20 (concepts, designated initializers, defaulted comparisons).
-// Depends only on gRPC and the C++ standard library.
+// Bidirectional asynchronous client stream.
+// Requires C++20; depends only on gRPC and the C++ standard library.
 
 #include <grpc_async_stream/AsyncCallBase.h>
 #include <grpc_async_stream/AsyncReadStream.h>
 #include <grpc_async_stream/AsyncWriteStream.h>
 
-#include <grpcpp/grpcpp.h>
 #include <grpcpp/support/async_stream.h>
 
 namespace grpc_async_stream
 {
 
-// The callable passed to AsyncReadWriteStream::open(): creates the call with an
-// Async* stub method, e.g. [&](auto* ctx, auto* cq, void* tag) { return stub->AsyncChat(ctx, cq, tag); }
+// Callable passed to AsyncReadWriteStream::open(), see AsyncStreamFactoryFor
 template<typename Factory, typename RequestProto, typename ResponseProto>
 concept StreamFactoryFor =
     AsyncStreamFactoryFor<Factory, grpc::ClientAsyncReaderWriterInterface<RequestProto, ResponseProto>>;
 
-// A wrapper over the asynchronous bidirectional client stream
-// (grpc::ClientAsyncReaderWriterInterface), assembled by single inheritance
-// from the read side over the write side over the call core:
-//
-//   AsyncReadWriteStream -> AsyncReadStream -> AsyncWriteStream -> detail::AsyncCallBase
-//
-// so it offers the members of both AsyncWriteStream (sendRequest(),
-// writesDone(), the bounded write queue and its statistics) and
-// AsyncReadStream (poll() / pollFor() with a response handler). The
-// handler-less poll() of the write side is hidden, so responses cannot be
-// ignored by mistake. The protocol-specific parts (creating the stream via the
-// stub method and processing the received responses) are provided by the caller.
-//
-// Threading: NOT thread-safe. open(), close(), sendRequest(), writesDone(),
-// setWriteQueueLimits() and poll() must all be called from the same thread.
+// Bidirectional call wrapper: AsyncReadWriteStream -> AsyncReadStream -> AsyncWriteStream -> detail::AsyncCallBase
+// Combines the write queue of AsyncWriteStream with poll() / pollFor() taking a response handler.
+// Not thread-safe: call all members from one thread.
 template<ProtobufMessage RequestProto, ProtobufMessage ResponseProto>
 class AsyncReadWriteStream
     : public AsyncReadStream<
@@ -56,8 +42,7 @@ public:
     using Response                   = ResponseProto;
 
     AsyncReadWriteStream() = default;
-    // Not inherited from the forwarding constructor of AsyncReadStream, so that
-    // designated initializers work: AsyncReadWriteStream<Req, Resp> stream({.max_messages = 256});
+    // Explicit (not forwarded) to allow: AsyncReadWriteStream<Req, Resp> stream({.max_messages = 256});
     explicit AsyncReadWriteStream(const WriteQueueLimits& limits)
         : Base(limits)
     {
