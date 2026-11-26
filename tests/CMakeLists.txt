@@ -12,6 +12,7 @@ target_link_libraries(GrpcAsyncStreamTests PRIVATE
     Catch2::Catch2WithMain)
 
 grpc_async_stream_configure_test_target(GrpcAsyncStreamTests)
+grpc_async_stream_enable_coverage(GrpcAsyncStreamTests)
 
 set(_test_properties TIMEOUT 120)
 if(GRPC_ASYNC_STREAM_TEST_ENVIRONMENT)

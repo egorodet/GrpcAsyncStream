@@ -33,6 +33,7 @@
 # Results exported to the parent scope:
 #   GRPC_ASYNC_STREAM_SANITIZERS_ACTIVE     - sanitizers are really enabled for this toolchain
 #   GRPC_ASYNC_STREAM_HEAP_TRACKING_ACTIVE  - the benchmark replaces operator new/delete to track the heap
+#   GRPC_ASYNC_STREAM_COVERAGE_ACTIVE       - test targets are instrumented for code coverage (gcov format)
 #   GRPC_ASYNC_STREAM_TEST_ENVIRONMENT      - environment for CTest (sanitizer runtime options)
 
 include_guard(GLOBAL)
@@ -100,6 +101,18 @@ if(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS)
     endif()
 endif()
 
+# Coverage instrumentation in gcov format (--coverage), read with gcov (GCC) or `llvm-cov gcov` (Clang).
+# The library is header-only, so instrumenting the test targets covers its headers.
+set(GRPC_ASYNC_STREAM_COVERAGE_ACTIVE OFF)
+if(GRPC_ASYNC_STREAM_ENABLE_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" AND NOT MSVC)
+        set(GRPC_ASYNC_STREAM_COVERAGE_ACTIVE ON)
+        message(STATUS "GrpcAsyncStream: code coverage instrumentation enabled")
+    else()
+        message(WARNING "GrpcAsyncStream: coverage is supported with GCC and Clang only, option ignored")
+    endif()
+endif()
+
 # The benchmark's heap tracking replaces the global operator new/delete and keeps
 # the size of each block in a header in front of it. Sanitizers install their own
 # allocator (and quarantine freed memory), so tracking is disabled with them.
@@ -150,6 +163,19 @@ function(grpc_async_stream_configure_test_target target)
         target_link_options(${target} PRIVATE ${GRPC_ASYNC_STREAM_SANITIZE_LINK_OPTIONS})
         if(GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS)
             target_compile_definitions(${target} PRIVATE ${GRPC_ASYNC_STREAM_SANITIZE_DEFINITIONS})
+        endif()
+    endif()
+endfunction()
+
+# Only targets that the test run executes are instrumented: objects that never run (header
+# checks, benchmarks) would report their template instances as uncovered.
+function(grpc_async_stream_enable_coverage target)
+    if(GRPC_ASYNC_STREAM_COVERAGE_ACTIVE)
+        target_compile_options(${target} PRIVATE --coverage)
+        target_link_options(${target} PRIVATE --coverage)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            # The in-process server runs on other threads: keep the counters consistent
+            target_compile_options(${target} PRIVATE -fprofile-update=atomic)
         endif()
     endif()
 endfunction()

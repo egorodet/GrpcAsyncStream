@@ -23,6 +23,8 @@ concurrency:
 # cache entry. The dependencies are always Release packages: conan-relwithsanitizers
 # builds this project as RelWithDebInfo (with assertions) over the Release packages,
 # so the sanitizer job of a platform shares the dependencies of its release job.
+# conan-coverage (a Debug build with --coverage) likewise shares the Linux GCC packages
+# and uploads its report to Codecov.
 
 jobs:
   build-and-test:
@@ -39,6 +41,13 @@ jobs:
             cc: gcc
             cxx: g++
             preset: conan-release
+          - name: Linux GCC Coverage
+            os: ubuntu-latest
+            deps: linux-gcc
+            cc: gcc
+            cxx: g++
+            preset: conan-coverage
+            coverage: true
           - name: Linux Clang + ASan/UBSan/LSan
             os: ubuntu-latest
             deps: linux-clang
@@ -143,7 +152,27 @@ jobs:
         run: ctest --preset ${{ matrix.preset }}
 
       - name: Heavy-load benchmark (memory bounds)
+        if: ${{ !matrix.coverage }}
         run: ctest --preset ${{ matrix.preset }}-benchmarks
+
+      # Filters and options come from gcovr.cfg; gcov is the one of the default GCC
+      - name: Coverage report
+        if: matrix.coverage
+        run: |
+          pip install "gcovr>=8,<9"
+          gcovr build-${{ matrix.preset }} --cobertura coverage.xml
+
+      # Pull requests from forks have no secrets and rely on Codecov's tokenless upload,
+      # which may be rate-limited, so only failures of this repository's uploads fail the job
+      - name: Upload coverage to Codecov
+        if: matrix.coverage
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          disable_search: true
+          flags: tests
+          fail_ci_if_error: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
 
   # The CPM path (no package manager) stays covered by one job; ccache keeps its
   # gRPC source build fast after the first run.

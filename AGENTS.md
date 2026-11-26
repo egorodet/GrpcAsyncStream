@@ -23,6 +23,8 @@ Use the presets of [`CMakePresets.json`](CMakePresets.json); each builds in `bui
 ```bash
 cmake --workflow --preset conan-release           # configure + build + unit/integration tests
 cmake --workflow --preset conan-relwithsanitizers # same with ASan/UBSan (+LSan on Linux)
+cmake --workflow --preset conan-coverage          # Debug tests with coverage (GCC/Clang), then:
+gcovr build-conan-coverage                        # coverage summary (settings in gcovr.cfg)
 ```
 
 Step by step, or to iterate after the first configure:
@@ -60,14 +62,18 @@ Before proposing a change, at minimum:
 1. `cmake --workflow --preset conan-release` passes (warnings are errors: `-Wall -Wextra -Wpedantic -Wshadow
    -Wconversion -Werror`, `/W4 /WX` on MSVC).
 2. For changes to library or test-utility code, `cmake --workflow --preset conan-relwithsanitizers` passes too.
-3. `GrpcAsyncStreamHeaderChecks` builds (it is part of the build): every public header must compile on its
+3. **Test coverage does not go down.** New or changed code in `include/` and `tests/include/` is covered by
+   tests, and the total line coverage measured by `conan-coverage` + `gcovr` is not lower than on `main`.
+   CI uploads the report to [Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream), whose project and
+   patch checks (see [`codecov.yml`](codecov.yml)) fail a pull request that lowers coverage.
+4. `GrpcAsyncStreamHeaderChecks` builds (it is part of the build): every public header must compile on its
    own. A new public header must be added to the header list in [`tests/CMakeLists.txt`](tests/CMakeLists.txt)
    (test utility headers to `GRPC_ASYNC_STREAM_TEST_UTILS_HEADERS` in `CMakeLists.txt`).
-4. Docs are updated: [`README.md`](README.md) for API, options, tests, layout or benchmark changes;
+5. Docs are updated: [`README.md`](README.md) for API, options, tests, layout or benchmark changes;
    [`docs/Optimizations.md`](docs/Optimizations.md) for performance work.
 
 CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs Linux GCC/Clang, macOS Apple Clang and
-Windows MSVC, with and without sanitizers, plus a CPM build. Code must stay portable across all of them:
+Windows MSVC, with and without sanitizers, a Linux GCC coverage build and a CPM build. Code must stay portable across all of them:
 include every standard header you use (MSVC does not provide transitive includes the way libstdc++ does,
 e.g. `<functional>` for `std::ranges::greater_equal`).
 
@@ -114,6 +120,9 @@ These keep gRPC async usage correct; do not break them:
 ## Tests
 
 - Every behaviour change or bug fix gets a test in the matching suite file.
+- Keep coverage at least where it was: when adding code paths (error handling, new options, policies), add
+  tests that reach them; check the uncovered lines with `gcovr build-conan-coverage --txt` or
+  `--html-details`. Do not exclude code from coverage to hide a drop.
 - Prefer the deterministic fakes (`FakeCall`, `makeFakeStreamFactory()` / `makeFakeWriterFactory()` /
   `makeFakeReaderFactory()`) for state-machine and ordering tests; use the in-process server
   (`TestSupport` + `InProcessServer`) for real gRPC behaviour. Check `call->violations().empty()` with fakes.

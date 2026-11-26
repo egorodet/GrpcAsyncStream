@@ -21,6 +21,7 @@ option(GRPC_ASYNC_STREAM_BUILD_TESTS      "Build GrpcAsyncStream unit and integr
 option(GRPC_ASYNC_STREAM_BUILD_BENCHMARKS "Build GrpcAsyncStream heavy-load benchmarks"      ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 option(GRPC_ASYNC_STREAM_ENABLE_WARNINGS  "Compile tests with extra warnings as errors"       ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 option(GRPC_ASYNC_STREAM_ENABLE_SANITIZERS "Build tests with the sanitizers supported by the toolchain" OFF)
+option(GRPC_ASYNC_STREAM_ENABLE_COVERAGE  "Build tests with code coverage instrumentation (GCC/Clang)" OFF)
 option(GRPC_ASYNC_STREAM_HEAP_TRACKING    "Track C++ heap usage in the benchmarks (off automatically with sanitizers)" ON)
 option(GRPC_ASYNC_STREAM_INSTALL          "Generate install and package-config rules"        ${GRPC_ASYNC_STREAM_IS_TOP_LEVEL})
 # A gRPC built from source by this project only serves its own tests and benchmarks
@@ -161,6 +162,7 @@ if(GRPC_ASYNC_STREAM_BUILD_TESTS OR GRPC_ASYNC_STREAM_BUILD_BENCHMARKS)
         GrpcAsyncStreamTestProto)
 
     grpc_async_stream_configure_test_target(GrpcAsyncStreamTestSupport)
+    grpc_async_stream_enable_coverage(GrpcAsyncStreamTestSupport)
 endif()
 
 if(GRPC_ASYNC_STREAM_BUILD_TESTS)

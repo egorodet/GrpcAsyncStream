@@ -1,0 +1,15 @@
+# Codecov settings: a change must not lower the total coverage of the project, and its own
+# lines should be covered at least as well as the project already is.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0%
+    patch:
+      default:
+        target: auto
+
+comment:
+  layout: "condensed_header, diff, files"
+  require_changes: false

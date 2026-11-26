@@ -71,6 +71,15 @@
             }
         },
         {
+            "name": "config-coverage",
+            "hidden": true,
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "GRPC_ASYNC_STREAM_ENABLE_COVERAGE": "ON",
+                "GRPC_ASYNC_STREAM_BUILD_BENCHMARKS": "OFF"
+            }
+        },
+        {
             "name": "cpm-release",
             "inherits": [
                 "cpm",
@@ -105,6 +114,15 @@
             ],
             "displayName": "Debug (CPM)",
             "description": "Unoptimized build with debug information"
+        },
+        {
+            "name": "cpm-coverage",
+            "inherits": [
+                "cpm",
+                "config-coverage"
+            ],
+            "displayName": "Coverage (CPM)",
+            "description": "Debug build of the tests with code coverage instrumentation (GCC/Clang)"
         },
         {
             "name": "conan-release",
@@ -147,6 +165,18 @@
             ],
             "displayName": "Debug (Conan)",
             "description": "Unoptimized build with debug information"
+        },
+        {
+            "name": "conan-coverage",
+            "inherits": [
+                "conan",
+                "config-coverage"
+            ],
+            "displayName": "Coverage (Conan)",
+            "description": "Debug build of the tests with code coverage instrumentation (GCC/Clang), over the Release packages",
+            "cacheVariables": {
+                "CONAN_INSTALL_BUILD_CONFIGURATIONS": "Release"
+            }
         }
     ],
     "buildPresets": [
@@ -171,6 +201,11 @@
             "displayName": "Debug (CPM)"
         },
         {
+            "name": "cpm-coverage",
+            "configurePreset": "cpm-coverage",
+            "displayName": "Coverage (CPM)"
+        },
+        {
             "name": "conan-release",
             "configurePreset": "conan-release",
             "displayName": "Release (Conan)"
@@ -189,6 +224,11 @@
             "name": "conan-debug",
             "configurePreset": "conan-debug",
             "displayName": "Debug (Conan)"
+        },
+        {
+            "name": "conan-coverage",
+            "configurePreset": "conan-coverage",
+            "displayName": "Coverage (Conan)"
         }
     ],
     "testPresets": [
@@ -274,6 +314,12 @@
             "displayName": "Debug (CPM) benchmarks"
         },
         {
+            "name": "cpm-coverage",
+            "inherits": "tests",
+            "configurePreset": "cpm-coverage",
+            "displayName": "Coverage (CPM) tests"
+        },
+        {
             "name": "conan-release",
             "inherits": "tests",
             "configurePreset": "conan-release",
@@ -320,6 +366,12 @@
             "inherits": "benchmarks",
             "configurePreset": "conan-debug",
             "displayName": "Debug (Conan) benchmarks"
+        },
+        {
+            "name": "conan-coverage",
+            "inherits": "tests",
+            "configurePreset": "conan-coverage",
+            "displayName": "Coverage (Conan) tests"
         }
     ],
     "workflowPresets": [
@@ -396,6 +448,24 @@
             ]
         },
         {
+            "name": "cpm-coverage",
+            "displayName": "Coverage (CPM): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "cpm-coverage"
+                },
+                {
+                    "type": "build",
+                    "name": "cpm-coverage"
+                },
+                {
+                    "type": "test",
+                    "name": "cpm-coverage"
+                }
+            ]
+        },
+        {
             "name": "conan-release",
             "displayName": "Release (Conan): configure, build, test",
             "steps": [
@@ -464,6 +534,24 @@
                 {
                     "type": "test",
                     "name": "conan-debug"
+                }
+            ]
+        },
+        {
+            "name": "conan-coverage",
+            "displayName": "Coverage (Conan): configure, build, test",
+            "steps": [
+                {
+                    "type": "configure",
+                    "name": "conan-coverage"
+                },
+                {
+                    "type": "build",
+                    "name": "conan-coverage"
+                },
+                {
+                    "type": "test",
+                    "name": "conan-coverage"
                 }
             ]
         }
