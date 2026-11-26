@@ -670,7 +670,7 @@ source with `cpm-release` and ccache.
 
 ## Tests
 
-`GrpcAsyncStreamTests` (Catch2, registered with CTest) has seven suites, built on the
+`GrpcAsyncStreamTests` (Catch2, registered with CTest) has eight suites, built on the
 [test utilities](#test-utilities-for-your-own-tests):
 
 | Suite | File | Approach |
@@ -681,7 +681,8 @@ source with `cpm-release` and ccache.
 | `[write-stream]` | `tests/WriteStreamTests.cpp` | `AsyncWriteStream`: state machine through a fake writer, idle `poll()` not waiting, compile-time checks, and `Upload` calls to the test server (order, empty upload, errors, early reply, cancellation, deadline, slow server). |
 | `[read-stream]` | `tests/ReadStreamTests.cpp` | `AsyncReadStream` and class composition: layering checks, state machine through a fake reader, and `Subscribe` calls (5000-response burst, errors, cancellation, deadline, sequential calls). |
 | `[mocks]` | `tests/ClientAsyncMocksTests.cpp` | The extensible mocks: compile-time checks, operation recording, derived mocks driving all three streams, and auto-completing mocks. |
-| `[test-utils]` | `tests/TestUtilsUsageTests.cpp` | The test utilities used as a product's tests would, with only the public headers. |
+| `[stream-utils]` | `tests/StreamUtilsTests.cpp` | The `StreamUtils.h` helpers: every exit of `pollUntil()` / `pollUntilClosed()` (condition met, call ended, timeout) with and without a response handler, and the message-sequence checks. |
+| `[test-utils]` | `tests/TestUtilsUsageTests.cpp`, `tests/TestUtilsTests.cpp` | The test utilities used as a product's tests would, with only the public headers; and the utilities themselves: every contract violation `FakeCall` detects, names of invalid enum values, Catch2 string makers and `InProcessServer` start failures. |
 
 `GrpcAsyncStreamHeaderChecks` compiles every public header on its own with full warnings.
 
@@ -720,6 +721,10 @@ instances are merged, so headers count each source line once. With Clang, add
 `--gcov-executable "llvm-cov gcov"`. CI uploads the report to
 [Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream); [`codecov.yml`](codecov.yml) makes its checks
 fail when a pull request lowers the project coverage or covers its own changes less than the project.
+
+Branch coverage stays at 90% or more: `gcovr build-conan-coverage --txt-metric branch` lists the lines with
+missed branches. The branches left are those only an exception or a failed `assert` takes (cleanups after a
+failed allocation, for instance) and defensive checks that the stream's own invariants keep from failing.
 
 ---
 
@@ -920,7 +925,9 @@ GrpcAsyncStream/
 │   ├── WriteStreamTests.cpp          # AsyncWriteStream (client-streaming calls)
 │   ├── ReadStreamTests.cpp           # AsyncReadStream (server-streaming calls), class composition
 │   ├── IntegrationTests.cpp
+│   ├── StreamUtilsTests.cpp          # polling helpers and message-sequence checks
 │   ├── ClientAsyncMocksTests.cpp     # the extensible client stream mocks, used directly and derived
+│   ├── TestUtilsTests.cpp            # the test utilities themselves (FakeCall violations, enum names, ...)
 │   └── TestUtilsUsageTests.cpp       # the test utilities used as a product would use them
 └── benchmarks/
     ├── AsyncStreamBenchmarks.cpp

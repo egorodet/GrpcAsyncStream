@@ -168,6 +168,15 @@ TEST_CASE("Default write queue limits bound both message count and bytes", "[wri
     CHECK(unbounded.max_bytes == unlimited);
 }
 
+TEST_CASE("Write queue limits differing in any field are not equal", "[write-queue]")
+{
+    const WriteQueueLimits base = limits(1, 2, WriteOverflowPolicy::DropNewest);
+    CHECK(base == limits(1, 2, WriteOverflowPolicy::DropNewest));
+    CHECK_FALSE(base == limits(3, 2, WriteOverflowPolicy::DropNewest));
+    CHECK_FALSE(base == limits(1, 3, WriteOverflowPolicy::DropNewest));
+    CHECK_FALSE(base == limits(1, 2, WriteOverflowPolicy::DropOldest));
+}
+
 TEST_CASE("isAccepted() classifies every send result", "[write-queue][enums]")
 {
     static_assert(grpc_async_stream::isAccepted(SendResult::Written));

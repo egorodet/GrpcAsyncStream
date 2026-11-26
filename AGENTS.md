@@ -52,8 +52,8 @@ ctest --preset conan-release-benchmarks           # benchmarks only
   ```
 
 - Suite tags: `[lifecycle]`, `[write-queue]`, `[write-stream]`, `[read-stream]`, `[integration]`, `[mocks]`,
-  `[test-utils]`. Benchmark tags: `[latency]`, `[throughput]`, `[read]`, `[write]`, `[queue]`, `[poll]`,
-  `[load]` (all under `[benchmark]`).
+  `[stream-utils]`, `[test-utils]`. Benchmark tags: `[latency]`, `[throughput]`, `[read]`, `[write]`, `[queue]`,
+  `[poll]`, `[load]` (all under `[benchmark]`).
 
 ### Definition of done
 
@@ -63,7 +63,8 @@ Before proposing a change, at minimum:
    -Wconversion -Werror`, `/W4 /WX` on MSVC).
 2. For changes to library or test-utility code, `cmake --workflow --preset conan-relwithsanitizers` passes too.
 3. **Test coverage does not go down.** New or changed code in `include/` and `tests/include/` is covered by
-   tests, and the total line coverage measured by `conan-coverage` + `gcovr` is not lower than on `main`.
+   tests, the total line coverage measured by `conan-coverage` + `gcovr` is not lower than on `main`, and
+   branch coverage (`gcovr build-conan-coverage --txt-metric branch`) stays at 90% or more.
    CI uploads the report to [Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream), whose project and
    patch checks (see [`codecov.yml`](codecov.yml)) fail a pull request that lowers coverage.
 4. `GrpcAsyncStreamHeaderChecks` builds (it is part of the build): every public header must compile on its
