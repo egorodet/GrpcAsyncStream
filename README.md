@@ -1,5 +1,6 @@
 # GRPC Async Stream
 
+[![CI](https://github.com/egorodet/GrpcAsyncStream/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/egorodet/GrpcAsyncStream/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream/graph/badge.svg)](https://codecov.io/gh/egorodet/GrpcAsyncStream)
 [![Bencher](https://img.shields.io/badge/benchmarks-Bencher-orange)](https://bencher.dev/perf/grpcasyncstream)
 
