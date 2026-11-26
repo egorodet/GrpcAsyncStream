@@ -12,7 +12,8 @@
 //  [poll]        cost of poll() when no event is available
 //  [load]        heavy load against a slow server: memory consumption (C++ heap and
 //                RSS), queue occupancy, drop counts, send / drain timings and
-//                end-to-end latency for bounded and unbounded write queues
+//                end-to-end latency for bounded and unbounded write queues; with
+//                GRPC_ASYNC_STREAM_BENCH_BMF=<file> also written in Bencher Metric Format
 //
 // All benchmarks are hidden test cases; run them explicitly, e.g.
 //   GrpcAsyncStreamBenchmarks "[benchmark]"
@@ -262,6 +263,37 @@ void printLoadResults(const LoadConfig& sample, const std::vector<LoadResult>& r
     std::fflush(stdout);
 }
 
+// Writes the results in Bencher Metric Format (https://bencher.dev/docs/reference/bencher-metric-format/)
+// for continuous benchmarking; heap and RSS figures that were not measured are left out.
+void writeLoadResultsBmf(const char* path, const std::vector<LoadResult>& results)
+{
+    std::FILE* file = std::fopen(path, "w");
+    REQUIRE(file != nullptr);
+    std::fprintf(file, "{\n");
+    for (std::size_t i = 0; i < results.size(); ++i)
+    {
+        const LoadResult& r = results[i];
+        std::fprintf(file, "  \"Heavy load: %s\": {\n", r.name.c_str());
+        if (r.heap_peak_growth)
+            std::fprintf(file, "    \"heap-peak-growth\": {\"value\": %lld},\n",
+                         static_cast<long long>(*r.heap_peak_growth));
+        if (r.rss_peak_growth)
+            std::fprintf(file, "    \"rss-peak-growth\": {\"value\": %lld},\n",
+                         static_cast<long long>(*r.rss_peak_growth));
+        std::fprintf(file,
+                     "    \"send-cost\": {\"value\": %.3f},\n"
+                     "    \"drain-time\": {\"value\": %.3f},\n"
+                     "    \"delivery-latency-p50\": {\"value\": %.3f},\n"
+                     "    \"delivery-latency-p99\": {\"value\": %.3f},\n"
+                     "    \"dropped-requests\": {\"value\": %llu}\n"
+                     "  }%s\n",
+                     r.send_ns_per_msg, r.drain_ms, r.latency_p50_ms, r.latency_p99_ms,
+                     static_cast<unsigned long long>(r.dropped), i + 1 < results.size() ? "," : "");
+    }
+    std::fprintf(file, "}\n");
+    REQUIRE(std::fclose(file) == 0);
+}
+
 constexpr WriteQueueLimits makeLimits(std::size_t max_messages, std::size_t max_bytes, WriteOverflowPolicy policy)
 {
     return {.max_messages = max_messages, .max_bytes = max_bytes, .overflow_policy = policy};
@@ -496,6 +528,8 @@ TEST_CASE("Heavy load: memory and timings with bounded and unbounded write queue
     std::ranges::transform(configs, std::back_inserter(results), runHeavyLoad);
 
     printLoadResults(configs.front(), results);
+    if (const char* bmf_path = std::getenv("GRPC_ASYNC_STREAM_BENCH_BMF"); bmf_path && *bmf_path)
+        writeLoadResultsBmf(bmf_path, results);
 
     const LoadResult& unbounded = results.back();
     CHECK(unbounded.status_ok);

@@ -77,6 +77,10 @@ Windows MSVC, with and without sanitizers, a Linux GCC coverage build and a CPM 
 include every standard header you use (MSVC does not provide transitive includes the way libstdc++ does,
 e.g. `<functional>` for `std::ranges::greater_equal`).
 
+[`.github/workflows/benchmarks.yml`](.github/workflows/benchmarks.yml) reports the benchmarks to
+[Bencher](https://bencher.dev/perf/grpcasyncstream) and compares pull requests with `main`. Keep benchmark names
+stable: Bencher tracks each result by its name.
+
 ## Code conventions
 
 - **C++20**, header-only library; use concepts, designated initializers, defaulted `operator==` where it fits.

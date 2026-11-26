@@ -1,0 +1,132 @@
+name: Benchmarks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Continuous benchmarking with Bencher (https://bencher.dev/perf/grpcasyncstream).
+#
+# All benchmarks run on Linux GCC with conan-release. The Catch2 benchmarks (XML report) and
+# the heavy-load results (Bencher Metric Format) are merged by benchmarks/bencher_bmf.py into one
+# report: pushes to main build the history of the `main` branch with its thresholds, and pull
+# requests are compared with the base branch at their fork point, with the results posted to the PR.
+# Alerts do not fail the job, since the timings of shared runners are noisy.
+#
+# The dependencies come from the same Conan cache entry as the Linux GCC job of ci.yml.
+
+jobs:
+  bencher:
+    name: Linux GCC benchmarks
+    # Pull requests from forks get no secrets
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+
+    env:
+      CC: gcc
+      CXX: g++
+      BENCHER_PROJECT: grpcasyncstream
+      BENCHER_TESTBED: ubuntu-24.04-gcc
+      BENCHER_API_KEY: ${{ secrets.BENCHER_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Conan
+        id: conan
+        run: |
+          pip install "conan>=2.9,<3"
+          conan profile detect --force
+          echo "profile-hash=$(conan profile show --format=json | python -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])')" >> "$GITHUB_OUTPUT"
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Restore Conan packages
+        id: conan-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.conan2/p
+          key: conan-linux-gcc-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
+          restore-keys: conan-linux-gcc-${{ steps.conan.outputs.profile-hash }}-
+
+      - name: Configure
+        run: cmake --preset conan-release
+
+      - name: Save Conan packages
+        if: steps.conan-cache.outputs.cache-hit != 'true'
+        run: conan cache clean "*" --source --build --download --temp
+
+      - uses: actions/cache/save@v4
+        if: steps.conan-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/.conan2/p
+          key: conan-linux-gcc-${{ steps.conan.outputs.profile-hash }}-${{ hashFiles('conanfile.py') }}
+
+      - name: Build
+        run: cmake --build --preset conan-release --target GrpcAsyncStreamBenchmarks
+
+      - name: Run benchmarks
+        env:
+          GRPC_ASYNC_STREAM_BENCH_BMF: load.json
+        run: |
+          ./build-conan-release/benchmarks/GrpcAsyncStreamBenchmarks "[benchmark]" --benchmark-samples 100 \
+            -r console -r xml::out=catch2.xml
+          python benchmarks/bencher_bmf.py --catch2-xml catch2.xml --bmf load.json --output bmf.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            catch2.xml
+            load.json
+            bmf.json
+
+      - uses: bencherdev/bencher@v0.6.17
+
+      # Thresholds: a t-test on the Catch2 timings, at most +10 % for the heap peak of the load scenarios
+      - name: Track main branch benchmarks
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          bencher run \
+            --branch main \
+            --threshold-measure latency \
+            --threshold-test t_test \
+            --threshold-max-sample-size 64 \
+            --threshold-upper-boundary 0.99 \
+            --threshold-measure heap-peak-growth \
+            --threshold-test percentage \
+            --threshold-max-sample-size 64 \
+            --threshold-upper-boundary 0.10 \
+            --thresholds-reset \
+            --adapter json \
+            --file bmf.json \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}'
+
+      - name: Compare pull request benchmarks
+        if: github.event_name == 'pull_request'
+        run: |
+          bencher run \
+            --branch "$GITHUB_HEAD_REF" \
+            --hash '${{ github.event.pull_request.head.sha }}' \
+            --start-point "$GITHUB_BASE_REF" \
+            --start-point-hash '${{ github.event.pull_request.base.sha }}' \
+            --start-point-clone-thresholds \
+            --start-point-reset \
+            --adapter json \
+            --file bmf.json \
+            --github-actions '${{ secrets.GITHUB_TOKEN }}'
