@@ -15,6 +15,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <cstdint>
 #include <functional>
 #include <ranges>
 #include <string>
@@ -236,6 +238,49 @@ TEST_CASE("pollFor() processes one event per call by default", "[lifecycle]")
     CHECK(processed() == 2);
     CHECK(idsOf(f.responses) == std::vector<std::uint64_t>{42});
     CHECK(f.call->readPending());
+    f.checkNoViolations();
+}
+
+TEST_CASE("pollFor() with a zero, negative or unbounded timeout", "[lifecycle]")
+{
+    FakeStreamFixture f;
+    REQUIRE(f.open());
+    CHECK(f.stream.sendRequest(makeEcho(1)) == SendResult::Queued);
+
+    // No wait at all: the pending start-call is not completed yet
+    CHECK(f.stream.pollFor(f.handler, std::chrono::milliseconds(0)));
+    CHECK(f.stream.pollFor(f.handler, std::chrono::milliseconds(-1)));
+    CHECK(f.call->startPending());
+
+    // Over a year waits without a deadline; the completed start-call ends the wait
+    f.call->completeStart();
+    REQUIRE(f.stream.pollFor(f.handler, std::chrono::hours(24 * 366)));
+    CHECK(f.call->writePending());
+    CHECK(f.writtenIds() == std::vector<std::uint64_t>{1});
+    f.checkNoViolations();
+}
+
+TEST_CASE("Server end of stream during the half-close: Finish waits for WritesDone", "[lifecycle]")
+{
+    FakeStreamFixture f;
+    f.openStarted();
+    CHECK(f.stream.writesDone());
+    CHECK(f.stream.state() == StreamState::HalfClosing);
+    REQUIRE(f.call->writesDonePending());
+
+    f.call->endReads();
+    REQUIRE(f.pump([&] { return f.stream.state() == StreamState::Finishing; }));
+    CHECK_FALSE(f.call->finishPending());
+
+    // The half-close completes while finishing: the state stays Finishing
+    f.call->completeWritesDone();
+    REQUIRE(f.pump([&] { return f.call->finishPending(); }));
+    CHECK(f.stream.state() == StreamState::Finishing);
+
+    f.call->completeFinish(grpc::Status::OK);
+    REQUIRE(f.pumpUntilClosed());
+    CHECK(f.stream.status().ok());
+    CHECK(f.call->finishCalls() == 1);
     f.checkNoViolations();
 }
 

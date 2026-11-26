@@ -4,6 +4,8 @@ add_executable(GrpcAsyncStreamTests
     WriteStreamTests.cpp
     ReadStreamTests.cpp
     IntegrationTests.cpp
+    StreamUtilsTests.cpp
+    TestUtilsTests.cpp
     TestUtilsUsageTests.cpp
     ClientAsyncMocksTests.cpp)
 
