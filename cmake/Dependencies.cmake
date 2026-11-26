@@ -302,7 +302,7 @@ function(grpc_async_stream_add_magic_enum)
     # 3. Fetch with CPM
     # Installed with this project when the test utilities are installed, so that
     # the exported GrpcAsyncStream::TestUtils target can find it
-    if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
+    if(GRPC_ASYNC_STREAM_INSTALL AND GRPC_ASYNC_STREAM_BUILD_TEST_UTILS AND GRPC_ASYNC_STREAM_GRPC_FOUND_AS_PACKAGE)
         set(_install_magic_enum ON)
         set(_exclude_magic_enum FALSE)
     else()

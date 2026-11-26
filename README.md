@@ -585,7 +585,7 @@ ctest --test-dir build/Release -LE benchmark --output-on-failure
   binaries are mostly C++17, so `--build=missing` builds gRPC once; the package cache keeps it.
 - The toolchain and presets set `GRPC_ASYNC_STREAM_GRPC_PROVIDER=package`, so a missing package is an error.
 - The recipe generates no `CMakeUserPresets.json` (its names would clash); delete one left by an earlier run.
-- Options: `-o "&:with_tests=False"`. When cross-building, `protoc` and
+- Options: `-o "&:with_tests=False"`, `-o "&:with_test_utils=True"`. When cross-building, `protoc` and
   `grpc_cpp_plugin` are added as tool requirements.
 
 **In your own Conan project**, require `grpc` (and `magic_enum` for the test utilities) and add this project
@@ -599,7 +599,7 @@ as a subdirectory or with CPM: imported targets and found packages are used as t
 | `GRPC_ASYNC_STREAM_GRPC_UNSECURE` | `ON` (top level) | Link `grpc++_unsecure` when building gRPC from source; no effect on a package |
 | `GRPC_ASYNC_STREAM_GRPC_VERSION` | `1.71.0` | gRPC version fetched when building from source |
 | `GRPC_ASYNC_STREAM_CATCH2_VERSION` | `3.8.1` | Catch2 version fetched when not found |
-| `GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS` | `GRPC_ASYNC_STREAM_INSTALL` | Install `GrpcAsyncStream::TestUtils` and its headers (the target itself is always defined) |
+| `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` | `OFF` | Provide and install `GrpcAsyncStream::TestUtils` for the tests of other projects (needs magic_enum); this project's tests and benchmarks define it without installing it |
 | `GRPC_ASYNC_STREAM_MAGIC_ENUM_VERSION` | `0.9.8` | magic_enum version fetched when not found |
 | `GRPC_ASYNC_STREAM_BUILD_TESTS` | `ON` (top level) | Build the test suite |
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
@@ -784,9 +784,12 @@ polling helpers they are used with are part of the library ([Stream utilities](#
 | `Catch2StringMakers.h` | Catch2 shows these enums and `grpc::StatusCode` by name. | Catch2 v3 |
 
 The target links `GrpcAsyncStream::GrpcAsyncStream` and magic_enum; only `Catch2StringMakers.h` needs Catch2.
+Turn on `GRPC_ASYNC_STREAM_BUILD_TEST_UTILS` to get it: it is off by default, so that the library alone does
+not depend on magic_enum.
 
 ```cmake
-# Subproject / CPM: the test utilities target is always defined, even when this project's tests are not built
+# Subproject / CPM: ask for the test utilities (off by default)
+set(GRPC_ASYNC_STREAM_BUILD_TEST_UTILS ON)
 CPMAddPackage(NAME GrpcAsyncStream GITHUB_REPOSITORY egorodet/GrpcAsyncStream GIT_TAG main)
 
 target_link_libraries(product_tests PRIVATE GrpcAsyncStream::TestUtils Catch2::Catch2WithMain)
@@ -834,8 +837,8 @@ CPMAddPackage(NAME GrpcAsyncStream GITHUB_REPOSITORY egorodet/GrpcAsyncStream GI
 target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
 ```
 
-**Installed package** (requires an installed gRPC; installs the test utilities too when
-`GRPC_ASYNC_STREAM_INSTALL_TEST_UTILS` is on, as it is by default):
+**Installed package** (requires an installed gRPC; add `-DGRPC_ASYNC_STREAM_BUILD_TEST_UTILS=ON` to install
+the test utilities too, which makes the package depend on magic_enum):
 
 ```bash
 cmake -S . -B build -DGRPC_ASYNC_STREAM_GRPC_PROVIDER=package -DGRPC_ASYNC_STREAM_BUILD_TESTS=OFF \
@@ -846,7 +849,7 @@ cmake --install build --prefix /usr/local
 ```cmake
 find_package(GrpcAsyncStream CONFIG REQUIRED)
 target_link_libraries(my_app PRIVATE GrpcAsyncStream::GrpcAsyncStream)
-target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils)
+target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils) # installed with the test utilities
 ```
 
 **Or copy** the headers of `include/grpc_async_stream` into your sources and link `gRPC::grpc++`.

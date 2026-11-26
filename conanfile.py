@@ -15,9 +15,9 @@ It also works on its own, with the generated toolchain:
     cmake -S . -B build/Release -G Ninja -DCMAKE_TOOLCHAIN_FILE=build/Release/generators/conan_toolchain.cmake           -DCMAKE_BUILD_TYPE=Release
 
 Options:
-    with_tests       build this project's tests and benchmarks (requires Catch2)
-
-magic_enum is always required: the GrpcAsyncStream::TestUtils target is always defined.
+    with_tests       build this project's tests and benchmarks (requires Catch2 and magic_enum)
+    with_test_utils  provide and install the GrpcAsyncStream::TestUtils target for the tests
+                     of other projects (requires magic_enum)
 """
 
 from conan import ConanFile
@@ -34,9 +34,12 @@ class GrpcAsyncStreamConan(ConanFile):
     settings = "os", "arch", "compiler", "build_type"
     options = {
         "with_tests": [True, False],
+        "with_test_utils": [True, False],
     }
     default_options = {
         "with_tests": True,
+        # Off, so that the library alone does not depend on magic_enum
+        "with_test_utils": False,
         # Only the C++ code generator of gRPC is needed (for the test protocol)
         "grpc/*:codegen": True,
         "grpc/*:cpp_plugin": True,
@@ -50,7 +53,9 @@ class GrpcAsyncStreamConan(ConanFile):
 
     def requirements(self):
         self.requires("grpc/1.72.0")
-        self.requires("magic_enum/0.9.8")
+        # The test utilities need magic_enum, and this project's tests are built on them
+        if self.options.with_tests or self.options.with_test_utils:
+            self.requires("magic_enum/0.9.8")
         if self.options.with_tests:
             self.requires("catch2/3.8.1")
 
@@ -77,6 +82,7 @@ class GrpcAsyncStreamConan(ConanFile):
         toolchain.cache_variables["GRPC_ASYNC_STREAM_GRPC_PROVIDER"] = "package"
         toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_TESTS"] = bool(self.options.with_tests)
         toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_BENCHMARKS"] = bool(self.options.with_tests)
+        toolchain.cache_variables["GRPC_ASYNC_STREAM_BUILD_TEST_UTILS"] = bool(self.options.with_test_utils)
         # No CMakeUserPresets.json: the project's own conan-* presets (CMakePresets.json)
         # use the same names as the presets Conan would generate
         toolchain.user_presets_path = False
