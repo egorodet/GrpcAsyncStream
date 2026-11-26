@@ -1,6 +1,8 @@
 # GRPC Async Stream
 
+[![CI](https://github.com/egorodet/GrpcAsyncStream/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/egorodet/GrpcAsyncStream/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream/graph/badge.svg)](https://codecov.io/gh/egorodet/GrpcAsyncStream)
+[![Bencher](https://img.shields.io/badge/benchmarks-Bencher-orange)](https://bencher.dev/perf/grpcasyncstream)
 
 A header-only C++20 utility that wraps the gRPC asynchronous client streams — **bidirectional**
 (`grpc::ClientAsyncReaderWriterInterface`), **client-streaming** (`grpc::ClientAsyncWriterInterface`) and
@@ -665,6 +667,8 @@ profile and `conanfile.py`, skips the gRPC build after the first run. **Linux GC
 with `conan-coverage` over the same packages as Linux GCC and uploads the [coverage](#code-coverage) report to
 [Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream). One more job, **Linux GCC (CPM)**, builds gRPC from
 source with `cpm-release` and ccache.
+[`.github/workflows/benchmarks.yml`](.github/workflows/benchmarks.yml) tracks the benchmark results with
+[Bencher](#continuous-benchmarking).
 
 ---
 
@@ -755,6 +759,35 @@ GRPC_ASYNC_STREAM_BENCH_SERVER_DELAY_US=50 ./build/benchmarks/GrpcAsyncStreamBen
 
 `ctest --test-dir build -L benchmark` runs them through CTest. [docs/Optimizations.md](docs/Optimizations.md)
 describes the profiling, bottlenecks and optimizations with their measured effect.
+
+### Continuous benchmarking
+
+[`.github/workflows/benchmarks.yml`](.github/workflows/benchmarks.yml) runs all benchmarks on Linux GCC
+(`conan-release`, testbed `ubuntu-24.04-gcc`) and reports them to the
+[Bencher project](https://bencher.dev/perf/grpcasyncstream):
+
+- Catch2 benchmarks as `latency` (mean, with its confidence interval) named `<test case>: <benchmark>`;
+- heavy-load scenarios as `Heavy load: <write queue>` with `heap-peak-growth` and `rss-peak-growth` (B),
+  `send-cost` (ns per `sendRequest()`), `drain-time`, `delivery-latency-p50` and `delivery-latency-p99` (ms)
+  and `dropped-requests`.
+
+Pushes to `main` extend the history of the `main` branch, with thresholds: a t-test (99 %) on `latency` and
+at most +10 % on `heap-peak-growth`. Pull requests from this repository are compared with `main` at their fork
+point and get the results, with any alerts, as a comment and a check; alerts do not fail the job, since shared
+runners are noisy. The workflow needs the `BENCHER_KEY` secret (a project API key, `bencher_run_…`).
+
+To produce the same report locally (Catch2 can write several reports in one run):
+
+```bash
+GRPC_ASYNC_STREAM_BENCH_BMF=load.json ./build/benchmarks/GrpcAsyncStreamBenchmarks "[benchmark]" \
+    --benchmark-samples 100 -r console -r xml::out=catch2.xml
+python3 benchmarks/bencher_bmf.py --catch2-xml catch2.xml --bmf load.json --output bmf.json
+bencher run --project grpcasyncstream --branch <branch> --testbed <testbed> --adapter json --file bmf.json
+```
+
+`GRPC_ASYNC_STREAM_BENCH_BMF=<file>` makes the `[load]` benchmark write its results in
+[Bencher Metric Format](https://bencher.dev/docs/reference/bencher-metric-format/);
+[`benchmarks/bencher_bmf.py`](benchmarks/bencher_bmf.py) merges them with the Catch2 XML report.
 
 ### Sample results
 
@@ -891,6 +924,7 @@ target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils) # install
 ```
 GrpcAsyncStream/
 ├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers, coverage
+├── .github/workflows/benchmarks.yml  # continuous benchmarking with Bencher
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
 ├── CMakePresets.json                 # cpm-* and conan-* presets: release, relwithdebinfo, relwithsanitizers, debug, coverage
 ├── codecov.yml                       # Codecov checks: coverage must not decrease
@@ -931,7 +965,8 @@ GrpcAsyncStream/
 │   └── TestUtilsUsageTests.cpp       # the test utilities used as a product would use them
 └── benchmarks/
     ├── AsyncStreamBenchmarks.cpp
-    └── MemoryTracker.{h,cpp}         # heap / RSS instrumentation
+    ├── MemoryTracker.{h,cpp}         # heap / RSS instrumentation
+    └── bencher_bmf.py                # Catch2 XML + load results -> Bencher Metric Format
 ```
 
 ---
