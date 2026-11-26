@@ -1,5 +1,7 @@
 # GRPC Async Stream
 
+[![codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream/graph/badge.svg)](https://codecov.io/gh/egorodet/GrpcAsyncStream)
+
 A header-only C++20 utility that wraps the gRPC asynchronous client streams — **bidirectional**
 (`grpc::ClientAsyncReaderWriterInterface`), **client-streaming** (`grpc::ClientAsyncWriterInterface`) and
 **server-streaming** (`grpc::ClientAsyncReaderInterface`) — behind a small, single-threaded, poll-driven API.
@@ -524,7 +526,7 @@ ctest --test-dir build -LE benchmark --output-on-failure      # unit + integrati
 
 ### CMake presets
 
-[`CMakePresets.json`](CMakePresets.json) defines four configurations in two dependency families, all with
+[`CMakePresets.json`](CMakePresets.json) defines five configurations in two dependency families, all with
 Ninja and a `build-<preset>` directory:
 
 | Configuration | `CMAKE_BUILD_TYPE` | CPM preset | Conan preset |
@@ -533,12 +535,13 @@ Ninja and a `build-<preset>` directory:
 | RelWithDebInfo: optimized, with debug information | `RelWithDebInfo` | `cpm-relwithdebinfo` | `conan-relwithdebinfo` |
 | RelWithSanitizers: `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS=ON`, with assertions (see [memory checks](#platform-support-and-memory-checks)) | `RelWithDebInfo` | `cpm-relwithsanitizers` | `conan-relwithsanitizers` |
 | Debug: unoptimized, with debug information | `Debug` | `cpm-debug` | `conan-debug` |
+| Coverage: Debug tests with `GRPC_ASYNC_STREAM_ENABLE_COVERAGE=ON`, no benchmarks (see [code coverage](#code-coverage)) | `Debug` | `cpm-coverage` | `conan-coverage` |
 
 - **`cpm-*`** build gRPC, protobuf, magic_enum and Catch2 from source; they need only CMake, a compiler,
   Ninja and git.
 - **`conan-*`** use [Conan 2](https://conan.io) ([`conanfile.py`](conanfile.py)) through the pinned
   [cmake-conan](https://github.com/conan-io/cmake-conan) provider, which runs `conan install` during
-  configure. `conan-relwithdebinfo` and `conan-relwithsanitizers` reuse the **Release** packages
+  configure. `conan-relwithdebinfo`, `conan-relwithsanitizers` and `conan-coverage` reuse the **Release** packages
   (`CONAN_INSTALL_BUILD_CONFIGURATIONS=Release`); `conan-debug` installs Debug packages.
 
 Each preset works for configure, build, test and as a workflow. Test presets exclude the benchmarks, which
@@ -605,6 +608,7 @@ as a subdirectory or with CPM: imported targets and found packages are used as t
 | `GRPC_ASYNC_STREAM_BUILD_BENCHMARKS` | `ON` (top level) | Build the benchmarks |
 | `GRPC_ASYNC_STREAM_ENABLE_WARNINGS` | `ON` (top level) | `-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Werror` (or `/W4 /WX`) |
 | `GRPC_ASYNC_STREAM_ENABLE_SANITIZERS` | `OFF` | Build tests/benchmarks with the supported sanitizers |
+| `GRPC_ASYNC_STREAM_ENABLE_COVERAGE` | `OFF` | Instrument the tests for code coverage (`--coverage`, GCC/Clang only) |
 | `GRPC_ASYNC_STREAM_GRPC_ASAN_INSTRUMENTED` | `OFF` | The linked gRPC is built with ASan; don't define `GRPC_ASAN_SUPPRESSED` |
 | `GRPC_ASYNC_STREAM_HEAP_TRACKING` | `ON` | Track the C++ heap in benchmarks; off in sanitizer builds |
 | `GRPC_ASYNC_STREAM_INSTALL` | `ON` (top level) | Install rules and package config (only with an installed gRPC) |
@@ -657,8 +661,10 @@ too, or use `GRPC_ASYNC_STREAM_GRPC_PROVIDER=fetch`.
 macOS Apple Clang (arm64) and Windows MSVC with `conan-release`, and on Linux Clang (ASan/UBSan/LSan), macOS
 (ASan/UBSan) and Windows MSVC (ASan) with `conan-relwithsanitizers`. Dependencies come from Conan (configure
 fails if anything is fetched with CPM), always as Release packages; the Conan cache, keyed on the compiler
-profile and `conanfile.py`, skips the gRPC build after the first run. A seventh job, **Linux GCC (CPM)**,
-builds gRPC from source with `cpm-release` and ccache.
+profile and `conanfile.py`, skips the gRPC build after the first run. **Linux GCC Coverage** builds the tests
+with `conan-coverage` over the same packages as Linux GCC and uploads the [coverage](#code-coverage) report to
+[Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream). One more job, **Linux GCC (CPM)**, builds gRPC from
+source with `cpm-release` and ccache.
 
 ---
 
@@ -695,6 +701,25 @@ ctest --test-dir build -LE benchmark --output-on-failure
 
 Sanitizer build: `cmake --workflow --preset conan-relwithsanitizers` (or `cpm-relwithsanitizers`); CTest
 passes the per-platform runtime options.
+
+### Code coverage
+
+The `conan-coverage` / `cpm-coverage` presets build the tests in Debug with `--coverage` (GCC or Clang; the
+benchmarks are off) and [gcovr](https://gcovr.com) reports the coverage of the library and test-utility
+headers, with the settings of [`gcovr.cfg`](gcovr.cfg):
+
+```bash
+pip install gcovr
+cmake --workflow --preset conan-coverage
+gcovr build-conan-coverage                                 # summary and per-file table
+gcovr build-conan-coverage --html-details coverage.html    # annotated sources
+```
+
+Only `GrpcAsyncStreamTests` and its support library are instrumented, and the lines of all template
+instances are merged, so headers count each source line once. With Clang, add
+`--gcov-executable "llvm-cov gcov"`. CI uploads the report to
+[Codecov](https://codecov.io/gh/egorodet/GrpcAsyncStream); [`codecov.yml`](codecov.yml) makes its checks
+fail when a pull request lowers the project coverage or covers its own changes less than the project.
 
 ---
 
@@ -860,13 +885,15 @@ target_link_libraries(my_app_tests PRIVATE GrpcAsyncStream::TestUtils) # install
 
 ```
 GrpcAsyncStream/
-├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers
+├── .github/workflows/ci.yml          # Linux / macOS / Windows CI, with and without sanitizers, coverage
 ├── CMakeLists.txt                    # library target, options, tests/benchmarks, install
-├── CMakePresets.json                 # cpm-* and conan-* presets: release, relwithdebinfo, relwithsanitizers, debug
+├── CMakePresets.json                 # cpm-* and conan-* presets: release, relwithdebinfo, relwithsanitizers, debug, coverage
+├── codecov.yml                       # Codecov checks: coverage must not decrease
+├── gcovr.cfg                         # coverage report settings (measured sources, merged template instances)
 ├── conanfile.py                      # Conan 2 recipe for the dependencies (optional)
 ├── cmake/
 │   ├── CPM.cmake                     # pinned CPM.cmake bootstrap (hash-verified)
-│   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, heap-tracking gating
+│   ├── CompilerOptions.cmake         # per-toolchain flags, sanitizers, coverage, heap-tracking gating
 │   ├── conan_provider.cmake          # cmake-conan dependency provider of the conan-* presets (pinned)
 │   ├── Dependencies.cmake            # gRPC, magic_enum, Catch2: imported targets, packages (Conan, …) or CPM
 │   ├── GrpcProtoGen.cmake            # protoc + grpc_cpp_plugin code generation helper
